@@ -2,7 +2,7 @@ package colmena
 
 // LibraryVersion is the semver string for the current Colmena release.
 // Bump on every tagged release. Used by Version() and exposed in Stats().
-const LibraryVersion = "0.8.0"
+const LibraryVersion = "0.9.0"
 
 // Wire format versions. Each envelope type has its own monotonically
 // increasing version. A node that reads an envelope with an unknown (newer)

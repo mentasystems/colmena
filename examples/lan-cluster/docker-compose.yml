@@ -1,0 +1,70 @@
+# 3-node Colmena LAN cluster running over a Docker bridge network.
+#
+# All three nodes share a CA generated once by the ca-init service, so they
+# accept each other's mTLS handshakes. They discover each other via mDNS on
+# the bridge subnet and form a cluster automatically without any seed list.
+#
+#   docker compose -f examples/lan-cluster/docker-compose.yml up --build
+
+services:
+  ca-init:
+    image: alpine:3.20
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        apk add --no-cache openssl >/dev/null
+        cd /ca
+        if [ ! -f ca.key ] || [ ! -f ca.crt ]; then
+          openssl ecparam -name prime256v1 -genkey -noout -out ca.key
+          openssl req -x509 -new -key ca.key -out ca.crt -days 365 \
+            -subj /CN=colmena-lan-test \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,keyCertSign,digitalSignature"
+        fi
+        echo "ca ready:"; ls -la /ca
+    volumes:
+      - ca-data:/ca
+
+  node1:
+    image: colmena-lan-cluster:latest
+    command: ["--data", "/data", "--ca", "/ca", "--bind", "0.0.0.0:9000", "--dead-voter-timeout", "30s"]
+    volumes:
+      - ca-data:/ca:ro
+      - node1-data:/data
+    networks: [colmena]
+    depends_on:
+      ca-init:
+        condition: service_completed_successfully
+
+  node2:
+    image: colmena-lan-cluster:latest
+    command: ["--data", "/data", "--ca", "/ca", "--bind", "0.0.0.0:9000", "--dead-voter-timeout", "30s"]
+    volumes:
+      - ca-data:/ca:ro
+      - node2-data:/data
+    networks: [colmena]
+    depends_on:
+      ca-init:
+        condition: service_completed_successfully
+
+  node3:
+    image: colmena-lan-cluster:latest
+    command: ["--data", "/data", "--ca", "/ca", "--bind", "0.0.0.0:9000", "--dead-voter-timeout", "30s"]
+    volumes:
+      - ca-data:/ca:ro
+      - node3-data:/data
+    networks: [colmena]
+    depends_on:
+      ca-init:
+        condition: service_completed_successfully
+
+networks:
+  colmena:
+    driver: bridge
+
+volumes:
+  ca-data:
+  node1-data:
+  node2-data:
+  node3-data:

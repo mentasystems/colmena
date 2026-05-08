@@ -361,9 +361,39 @@ func (n *Node) RemoveNode(nodeID string) error {
 	return n.raft.RemoveServer(raft.ServerID(nodeID), 0, n.config.ApplyTimeout).Error()
 }
 
+// AddNonvoter adds a non-voting learner to the cluster. Must be called on
+// the leader. Non-voters replicate the Raft log and can serve local reads
+// but do not count toward quorum, so they don't add latency to writes.
+//
+// Use this when scaling out for read throughput rather than fault tolerance:
+// keep a small voter core (3 or 5 nodes) and add as many non-voters as you
+// need behind it.
+func (n *Node) AddNonvoter(nodeID, address string) error {
+	return n.raft.AddNonvoter(raft.ServerID(nodeID), raft.ServerAddress(address), 0, n.config.ApplyTimeout).Error()
+}
+
+// AddVoter adds a full Raft voter to the cluster. Must be called on the leader.
+// If the node already exists as a non-voter, it is promoted to voter.
+func (n *Node) AddVoter(nodeID, address string) error {
+	return n.raft.AddVoter(raft.ServerID(nodeID), raft.ServerAddress(address), 0, n.config.ApplyTimeout).Error()
+}
+
+// DemoteVoter turns a voter into a non-voting learner without removing it.
+// Must be called on the leader. Useful for shrinking the voter quorum
+// (e.g., reducing 5 voters to 3) without losing the replica entirely.
+func (n *Node) DemoteVoter(nodeID string) error {
+	return n.raft.DemoteVoter(raft.ServerID(nodeID), 0, n.config.ApplyTimeout).Error()
+}
+
 // --- RPC ---
 
-type RPCJoinRequest struct{ NodeID, Address string }
+type RPCJoinRequest struct {
+	NodeID, Address string
+	// AsNonvoter, when true, requests the leader to add this node as a
+	// non-voting learner via raft.AddNonvoter. Default false (= AddVoter)
+	// preserves backwards compatibility with pre-v0.9 clients.
+	AsNonvoter bool
+}
 type RPCJoinResponse struct{ Error, LeaderAddr string }
 
 // RPCHelloRequest is sent by a node when it first opens an RPC connection
@@ -467,7 +497,34 @@ func (s *RPCService) Join(req *RPCJoinRequest, resp *RPCJoinResponse) error {
 		resp.LeaderAddr = string(leaderAddr)
 		return nil
 	}
-	f := s.node.raft.AddVoter(raft.ServerID(req.NodeID), raft.ServerAddress(req.Address), 0, s.node.config.ApplyTimeout)
+	id := raft.ServerID(req.NodeID)
+	addr := raft.ServerAddress(req.Address)
+	timeout := s.node.config.ApplyTimeout
+
+	// If a different NodeID is already registered at this address (e.g.,
+	// a node was reflashed and rejoined with a fresh NodeID but kept its
+	// DHCP IP, or a container was recreated with the same IP),
+	// AddVoter/AddNonvoter would fail with "found duplicate address in
+	// configuration". Remove the stale member first so the new one can
+	// take its slot.
+	if cf := s.node.raft.GetConfiguration(); cf.Error() == nil {
+		for _, srv := range cf.Configuration().Servers {
+			if string(srv.Address) == req.Address && string(srv.ID) != req.NodeID {
+				if err := s.node.raft.RemoveServer(srv.ID, 0, timeout).Error(); err != nil {
+					resp.Error = fmt.Sprintf("replace stale peer %s at %s: %v", srv.ID, srv.Address, err)
+					return nil
+				}
+				break
+			}
+		}
+	}
+
+	var f raft.IndexFuture
+	if req.AsNonvoter {
+		f = s.node.raft.AddNonvoter(id, addr, 0, timeout)
+	} else {
+		f = s.node.raft.AddVoter(id, addr, 0, timeout)
+	}
 	if err := f.Error(); err != nil { resp.Error = err.Error() }
 	return nil
 }
@@ -476,7 +533,11 @@ func (n *Node) join() error {
 	for _, addr := range n.config.Join {
 		client, err := n.rpcPool.get(addr)
 		if err != nil { log.Printf("colmena: failed to connect to %s: %v", addr, err); continue }
-		req := &RPCJoinRequest{NodeID: n.config.NodeID, Address: n.config.Advertise}
+		req := &RPCJoinRequest{
+			NodeID:     n.config.NodeID,
+			Address:    n.config.Advertise,
+			AsNonvoter: n.config.JoinAs == JoinAsNonvoter,
+		}
 		var resp RPCJoinResponse
 		if err := client.Call("Colmena.Join", req, &resp); err != nil {
 			n.rpcPool.markFailed(addr)

@@ -9,6 +9,22 @@ import (
 	"time"
 )
 
+// JoinRole determines whether a joining node participates in Raft quorum.
+type JoinRole int
+
+const (
+	// JoinAsVoter joins the cluster as a full Raft voter (default).
+	// Voters count toward quorum; adding voters increases write latency
+	// because each Apply must be acked by a majority of them.
+	JoinAsVoter JoinRole = 0
+
+	// JoinAsNonvoter joins the cluster as a non-voting learner.
+	// Non-voters receive replicated log entries and can serve local reads,
+	// but do not count toward quorum, so they cost nothing on the write
+	// path. Use them to scale read throughput beyond a 3- or 5-voter core.
+	JoinAsNonvoter JoinRole = 1
+)
+
 // Config holds the configuration for a Colmena node.
 type Config struct {
 	// NodeID is a unique identifier for this node in the cluster.
@@ -30,6 +46,13 @@ type Config struct {
 
 	// Join is a list of existing node addresses to join (e.g., ["10.0.0.2:9000", "10.0.0.3:9000"]).
 	Join []string
+
+	// JoinAs controls whether this node joins the cluster as a Raft voter
+	// (default) or as a non-voting learner. Non-voters replicate the log and
+	// serve local reads but do not count toward quorum, so they don't slow
+	// down writes — useful when scaling a cluster horizontally for read
+	// throughput. Ignored when Bootstrap is true.
+	JoinAs JoinRole
 
 	// Consistency is the default read consistency level.
 	Consistency ConsistencyLevel

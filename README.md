@@ -45,6 +45,7 @@ db.QueryRow("SELECT value FROM kv WHERE key = ?", "hello").Scan(&value)
 - **Leader forwarding for custom handlers** — type-safe `Forward[Req, Resp]()` sends any request to the leader via RPC.
 - **Reactive hooks** — `OnApply` callback fires on every node after each replicated write.
 - **Background jobs** — first-class job queue in `colmena/jobs`: typed handlers, retries with exponential backoff, cron schedules, cluster-wide concurrency and rate limits, all backed by the same Raft log. No Redis, no external broker. See [Background Jobs](#background-jobs).
+- **Zero-config LAN clustering** — optional `colmena/lan` subpackage: flash one binary onto every machine, nodes auto-discover via mDNS, mTLS via embedded CA, automatic voter / non-voter policy with failover (a non-voter is auto-promoted when a voter dies). See [LAN clustering](#lan-clustering).
 
 ## Quick Start
 
@@ -350,6 +351,96 @@ Properties:
 
 Schema (`colmena_jobs`, `colmena_jobs_schedule`, `colmena_jobs_ratelimit`, `colmena_jobs_concurrency`) is migrated automatically the first time `jobs.New` runs in the cluster.
 
+## LAN clustering
+
+The `colmena/lan` subpackage adds zero-config clustering for trusted local
+networks. Build one binary, flash it onto every machine, and the nodes form
+a cluster automatically — no seed list, no per-machine configuration.
+
+```go
+import (
+    _ "embed"
+    "github.com/kidandcat/colmena/lan"
+)
+
+//go:embed ca.crt
+var caCert []byte
+
+//go:embed ca.key
+var caKey []byte
+
+func main() {
+    cluster, _ := lan.Start(lan.Config{
+        DataDir:     "/var/lib/colmena",
+        Bind:        "0.0.0.0:9000",
+        CACert:      caCert,
+        CAKey:       caKey,
+        VoterQuorum: 3,
+    })
+    defer cluster.Close()
+    db := cluster.Node.DB()
+}
+```
+
+What it gives you:
+
+- **Persistent random NodeID** generated on first boot, stored in `DataDir/node_id`.
+- **mTLS by default**, with each node minting its own leaf cert from the CA + key
+  embedded in the binary. The hash of the CA cert is the cluster identity, so
+  multiple clusters can coexist on the same LAN without seeing each other.
+- **mDNS discovery** under `_colmena-<clusterID>._tcp.local.`.
+- **Automatic bootstrap election** when several fresh nodes start at once
+  (lexicographically smallest NodeID wins).
+- **Voter / non-voter policy**: the first `VoterQuorum` nodes (default 3)
+  become Raft voters, the rest join as non-voting learners that scale read
+  throughput without slowing down writes.
+- **Auto-failover.** A leader-side sweeper drops peers that have been
+  unreachable longer than `DeadVoterTimeout` (default 5 min) and the next
+  tick promotes the smallest-NodeID non-voter to fill the vacated voter
+  slot — non-voters are a hot pool of failover candidates, not just read
+  replicas. Recovery time = `DeadVoterTimeout` + ~5 s.
+- **Stale-address replacement.** A reflashed Pi that comes back with a
+  fresh NodeID but the same DHCP IP rejoins immediately: the leader's
+  Join RPC drops the stale entry at that address as part of accepting
+  the new one.
+
+### When to use which
+
+| Goal | Recommended setup |
+|---|---|
+| **Read scaling on a LAN** — homelab, edge boxes, appliance, lots of small machines on the same L2 | `colmena/lan` with `VoterQuorum=3` (or 5) and as many learner replicas as you like. Use `Consistency: ConsistencyNone` so reads hit local SQLite at ~6µs. |
+| **High availability across zones / regions** | `colmena.New` directly with an explicit seed list of 3 or 5 voters spread across failure domains. **Do not exceed 5 voters** — quorum size grows fsync + RTT cost on every write. |
+
+`colmena/lan` is the wrong tool for HA across data centers: mDNS doesn't
+cross subnets, an embedded CA is the wrong identity model for shared
+infrastructure, and a large voter quorum slows writes. For real HA, keep
+the cluster small (3–5 voters), distribute it across failure domains, and
+configure peers explicitly. See [`lan/README.md`](lan/README.md) for the
+full design and trade-offs.
+
+## Voter / non-voter
+
+`colmena.Node` exposes the underlying Raft membership operations directly,
+so you can mix voters and non-voters even without the `lan` subpackage:
+
+```go
+// On the leader: add a node that replicates the log and serves local
+// reads but does not count toward quorum.
+node.AddNonvoter("read-replica-1", "10.0.0.7:9000")
+
+// Promote it later if you need to grow the voter quorum.
+node.AddVoter("read-replica-1", "10.0.0.7:9000")
+
+// Or shrink the voter quorum without losing the replica.
+node.DemoteVoter("read-replica-1")
+```
+
+A new node can also request to join as a learner from the start by setting
+`Config.JoinAs = colmena.JoinAsNonvoter`. This is the right default once
+the cluster has reached its target voter count: more voters means more
+acks per write, so adding "for read scale" with voters actually slows the
+cluster down.
+
 ## Multiple Databases
 
 A single Raft cluster can host multiple independent SQLite databases, each with its own default consistency level. Each database maps to a separate `.db` file on disk.
@@ -415,6 +506,7 @@ colmena.Config{
     Advertise         string            // Address advertised to peers. Default: Bind.
     Bootstrap         bool              // Bootstrap new cluster (first node only).
     Join              []string          // Addresses of existing nodes to join.
+    JoinAs            JoinRole          // Voter (default) or Nonvoter — the role this node requests on join.
     Consistency       ConsistencyLevel  // Default read consistency. Default: Weak.
     HeartbeatTimeout  time.Duration     // Default: 1s.
     ElectionTimeout   time.Duration     // Default: 1s.

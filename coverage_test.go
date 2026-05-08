@@ -619,6 +619,63 @@ func TestRPCService_Join(t *testing.T) {
 	// this test — we only care that the RPC flowed.
 }
 
+// TestRPCService_Join_ReplacesStaleAddress verifies the fix for the
+// "duplicate address" failure that happens when a node leaves the
+// cluster and a new node arrives at the same address with a fresh
+// NodeID (e.g., a Pi reflashed and given the same DHCP IP, or a
+// Docker container recreated with the same bridge IP). The Join RPC
+// must remove the stale member first so the new one can take its slot.
+func TestRPCService_Join_ReplacesStaleAddress(t *testing.T) {
+	node := testNode(t)
+	svc := &RPCService{node: node}
+
+	const addr = "10.99.99.99:9000"
+	const oldID = "stale-node-id"
+	const newID = "fresh-node-id"
+
+	// Seed the configuration with a stale member at addr.
+	if err := node.raft.AddNonvoter("stale-node-id", "10.99.99.99:9000", 0, 5*time.Second).Error(); err != nil {
+		t.Fatalf("seed stale member: %v", err)
+	}
+	servers, _ := node.Nodes()
+	foundStale := false
+	for _, s := range servers {
+		if string(s.ID) == oldID && string(s.Address) == addr {
+			foundStale = true
+		}
+	}
+	if !foundStale {
+		t.Fatal("precondition failed: stale member not in configuration")
+	}
+
+	// Now a different NodeID joins at the same address.
+	var resp RPCJoinResponse
+	if err := svc.Join(&RPCJoinRequest{NodeID: newID, Address: addr, AsNonvoter: true}, &resp); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	if resp.Error != "" {
+		t.Fatalf("join returned error: %s", resp.Error)
+	}
+
+	// The new ID should be at addr, the old one should be gone.
+	servers, _ = node.Nodes()
+	var staleStillThere, newPresent bool
+	for _, s := range servers {
+		if string(s.ID) == oldID {
+			staleStillThere = true
+		}
+		if string(s.ID) == newID && string(s.Address) == addr {
+			newPresent = true
+		}
+	}
+	if staleStillThere {
+		t.Errorf("stale member %s still in configuration after replace", oldID)
+	}
+	if !newPresent {
+		t.Errorf("new member %s not in configuration at %s", newID, addr)
+	}
+}
+
 // TestBatcher_SubmitClosed exercises the batcher's close path.
 func TestBatcher_SubmitClosed(t *testing.T) {
 	node := testNode(t)

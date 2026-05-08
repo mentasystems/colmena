@@ -10,12 +10,20 @@ import (
 type ConsistencyLevel int
 
 const (
+	// consistencyUnset is the zero value of ConsistencyLevel. It is not
+	// a valid consistency level; applyDefaults() replaces it with
+	// ConsistencyWeak so existing callers that leave Config.Consistency
+	// at zero still get the documented default. Real levels start at 1
+	// so a caller can pass ConsistencyNone (= 1) and have it survive
+	// applyDefaults instead of being silently upgraded to Weak.
+	consistencyUnset ConsistencyLevel = iota
+
 	// ConsistencyNone reads from the local SQLite on this node, with no
 	// communication to other nodes. Fastest option (~8µs) but the data
 	// may be stale if this node is a follower behind on replication or
 	// is partitioned from the cluster.
 	// Use for: dashboards, analytics, data where momentary staleness is OK.
-	ConsistencyNone ConsistencyLevel = iota
+	ConsistencyNone
 
 	// ConsistencyWeak reads from the leader. If this node is the leader,
 	// it reads locally. If not, it forwards the query to the leader.
