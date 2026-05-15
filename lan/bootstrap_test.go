@@ -3,7 +3,7 @@ package lan
 import (
 	"testing"
 
-	"github.com/kidandcat/colmena"
+	"github.com/mentasystems/colmena"
 )
 
 func TestDecideRoleAlone(t *testing.T) {

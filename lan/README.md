@@ -8,7 +8,7 @@ CA for identity, automatic voter / non-voter policy.
 import (
     _ "embed"
 
-    "github.com/kidandcat/colmena/lan"
+    "github.com/mentasystems/colmena/lan"
 )
 
 //go:embed ca.crt

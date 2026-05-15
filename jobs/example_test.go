@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kidandcat/colmena"
-	"github.com/kidandcat/colmena/jobs"
+	"github.com/mentasystems/colmena"
+	"github.com/mentasystems/colmena/jobs"
 )
 
 // ExampleNew shows the minimum wiring: bring up a Colmena node, attach a

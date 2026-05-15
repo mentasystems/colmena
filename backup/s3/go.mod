@@ -1,4 +1,4 @@
-module github.com/kidandcat/colmena/backup/s3
+module github.com/mentasystems/colmena/backup/s3
 
 go 1.23.0
 
@@ -6,7 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.67
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.79.3
-	github.com/kidandcat/colmena v0.0.0
+	github.com/mentasystems/colmena v0.0.0
 )
 
 require (
@@ -44,4 +44,4 @@ require (
 	modernc.org/sqlite v1.36.3 // indirect
 )
 
-replace github.com/kidandcat/colmena => ../../
+replace github.com/mentasystems/colmena => ../../

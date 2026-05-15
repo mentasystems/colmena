@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/kidandcat/colmena"
+	"github.com/mentasystems/colmena"
 )
 
 // Config configures a zero-config LAN cluster node.

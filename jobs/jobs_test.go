@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kidandcat/colmena"
+	"github.com/mentasystems/colmena"
 )
 
 var _ = os.Getpid // keep os import if other usage is conditional

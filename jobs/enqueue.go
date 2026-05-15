@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kidandcat/colmena"
+	"github.com/mentasystems/colmena"
 )
 
 // EnqueueOption customises a single Enqueue call.

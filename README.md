@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://pkg.go.dev/github.com/kidandcat/colmena"><img src="https://pkg.go.dev/badge/github.com/kidandcat/colmena.svg" alt="Go Reference"></a>
-  <a href="https://github.com/kidandcat/colmena/actions"><img src="https://img.shields.io/badge/coverage-80.7%25-brightgreen" alt="Coverage"></a>
+  <a href="https://pkg.go.dev/github.com/mentasystems/colmena"><img src="https://pkg.go.dev/badge/github.com/mentasystems/colmena.svg" alt="Go Reference"></a>
+  <a href="https://github.com/mentasystems/colmena/actions"><img src="https://img.shields.io/badge/coverage-80.7%25-brightgreen" alt="Coverage"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSD--3--Clause-blue" alt="License"></a>
 </p>
 
@@ -52,7 +52,7 @@ db.QueryRow("SELECT value FROM kv WHERE key = ?", "hello").Scan(&value)
 ### Single node
 
 ```go
-import "github.com/kidandcat/colmena"
+import "github.com/mentasystems/colmena"
 
 node, err := colmena.New(colmena.Config{
     NodeID:    "node-1",
@@ -204,7 +204,7 @@ colmena.Restore(ctx, backend, "./data/restored-node")
 S3-compatible backend (AWS, MinIO, R2, B2):
 
 ```go
-import "github.com/kidandcat/colmena/backup/s3"
+import "github.com/mentasystems/colmena/backup/s3"
 
 backend, _ := s3.NewBackend(s3.Config{
     Endpoint:     "s3.amazonaws.com",
@@ -304,8 +304,8 @@ Colmena ships with a first-class background job system in the `jobs` subpackage.
 
 ```go
 import (
-    "github.com/kidandcat/colmena"
-    "github.com/kidandcat/colmena/jobs"
+    "github.com/mentasystems/colmena"
+    "github.com/mentasystems/colmena/jobs"
 )
 
 node, _ := colmena.New(colmena.Config{...})
@@ -360,7 +360,7 @@ a cluster automatically — no seed list, no per-machine configuration.
 ```go
 import (
     _ "embed"
-    "github.com/kidandcat/colmena/lan"
+    "github.com/mentasystems/colmena/lan"
 )
 
 //go:embed ca.crt

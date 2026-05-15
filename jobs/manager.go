@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kidandcat/colmena"
+	"github.com/mentasystems/colmena"
 )
 
 // Manager owns the worker pool and the leader-only background loops

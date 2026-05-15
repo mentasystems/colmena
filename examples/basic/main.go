@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kidandcat/colmena"
+	"github.com/mentasystems/colmena"
 )
 
 func main() {

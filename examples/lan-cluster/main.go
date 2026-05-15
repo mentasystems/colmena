@@ -41,8 +41,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kidandcat/colmena"
-	"github.com/kidandcat/colmena/lan"
+	"github.com/mentasystems/colmena"
+	"github.com/mentasystems/colmena/lan"
 )
 
 func main() {

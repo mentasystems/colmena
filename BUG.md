@@ -23,7 +23,7 @@ through the `*sql.Tx` wrapper.
 
 ## Reproduction
 
-Single-node Colmena (Raft leader = self) on the `kidandcat/colmena`
+Single-node Colmena (Raft leader = self) on the `mentasystems/colmena`
 v0.8.0 release. The relevant code path:
 
 ```go

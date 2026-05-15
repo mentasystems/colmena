@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kidandcat/colmena"
+	"github.com/mentasystems/colmena"
 )
 
 // testCluster builds an n-node cluster. Bind-time port conflicts trigger a
