@@ -46,6 +46,7 @@ db.QueryRow("SELECT value FROM kv WHERE key = ?", "hello").Scan(&value)
 - **Reactive hooks** — `OnApply` callback fires on every node after each replicated write.
 - **Background jobs** — first-class job queue in `colmena/jobs`: typed handlers, retries with exponential backoff, cron schedules, cluster-wide concurrency and rate limits, all backed by the same Raft log. No Redis, no external broker. See [Background Jobs](#background-jobs).
 - **Zero-config LAN clustering** — optional `colmena/lan` subpackage: flash one binary onto every machine, nodes auto-discover via mDNS, mTLS via embedded CA, automatic voter / non-voter policy with failover (a non-voter is auto-promoted when a voter dies). See [LAN clustering](#lan-clustering).
+- **Zero-config Fly.io clustering** — optional `colmena/fly` subpackage: deploy the same image to N machines in one region and they auto-form a Raft cluster over Fly's 6PN internal DNS (no mDNS, which Fly lacks), surviving the ephemeral machines every deploy recreates. See [Fly.io clustering](#flyio-clustering).
 
 ## Quick Start
 
@@ -409,6 +410,7 @@ What it gives you:
 | Goal | Recommended setup |
 |---|---|
 | **Read scaling on a LAN** — homelab, edge boxes, appliance, lots of small machines on the same L2 | `colmena/lan` with `VoterQuorum=3` (or 5) and as many learner replicas as you like. Use `Consistency: ConsistencyNone` so reads hit local SQLite at ~6µs. |
+| **HA app on Fly.io** — embedded store for a service deployed to Fly machines | `colmena/fly` with `VoterQuorum=3` in a single region. Auto-discovers over 6PN DNS, survives rolling deploys. |
 | **High availability across zones / regions** | `colmena.New` directly with an explicit seed list of 3 or 5 voters spread across failure domains. **Do not exceed 5 voters** — quorum size grows fsync + RTT cost on every write. |
 
 `colmena/lan` is the wrong tool for HA across data centers: mDNS doesn't
@@ -417,6 +419,61 @@ infrastructure, and a large voter quorum slows writes. For real HA, keep
 the cluster small (3–5 voters), distribute it across failure domains, and
 configure peers explicitly. See [`lan/README.md`](lan/README.md) for the
 full design and trade-offs.
+
+## Fly.io clustering
+
+The `colmena/fly` subpackage is the Fly.io counterpart of `colmena/lan`. Fly's
+private network (6PN) is a WireGuard mesh with **no multicast**, so mDNS finds
+nobody; `fly` discovers peers over Fly's **internal DNS** instead. Deploy the
+same image to N machines in one region and they form a Raft cluster
+automatically — no seed list, no per-machine configuration — surviving the
+ephemeral machines that every deploy recreates (each gets a new private IP and
+machine id).
+
+```go
+import "github.com/mentasystems/colmena/fly"
+
+func main() {
+    cfg, _ := fly.FromEnv() // NodeID/PrivateIP/Region/AppName from the Fly env
+    cfg.DataDir = "/data"   // a persistent Fly volume
+    cfg.VoterQuorum = 3
+
+    cluster, _ := fly.Start(cfg)
+    defer cluster.Close()
+    db := cluster.Node.DB()
+
+    // Health check for fly.toml; graceful leave on SIGTERM.
+    http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+        if cluster.Healthy() { w.WriteHeader(200) } else { w.WriteHeader(503) }
+    })
+}
+```
+
+What it gives you:
+
+- **6PN DNS discovery** — `vms.<app>.internal` (TXT) for the stable machine-id
+  set in your region and `<id>.vm.<app>.internal` (AAAA) for each machine's IP,
+  falling back to the region AAAA. `FLY_MACHINE_ID` is the Raft NodeID;
+  `[FLY_PRIVATE_IP]:port` is the advertise address.
+- **Split-brain-safe cold start** — an `ExpectedVoters` gate plus a deterministic
+  election: a node bootstraps only after observing the expected peer set (or a
+  timeout) **and** winning. A formed cluster is detected via a read-only `Status`
+  RPC probe, so a fresh low-id machine joins instead of starting a second cluster.
+- **Voter / non-voter policy** identical to `lan`: the first `VoterQuorum` nodes
+  become voters, the rest join as non-voting learners.
+- **Failover tuned for deploys** — the leader reaps voters absent from Fly DNS
+  longer than `DeadVoterTimeout` (default 30 s, far shorter than `lan`'s 5 min
+  because Fly recreates machines routinely) and promotes a non-voter to restore
+  quorum. On `SIGTERM`, `GracefulLeave` transfers leadership and removes the node
+  so a rolling deploy doesn't wait for the sweep.
+- **Caught-up health check** — `cluster.Healthy()` returns true only once the
+  node is in the configuration and (if a follower) has applied everything the
+  leader committed; wire it into `fly.toml` so a rolling deploy keeps quorum.
+
+Pin all nodes to **one region** (Raft is latency-sensitive; cross-region quorum
+is out of scope). mTLS is optional — the 6PN is already a private mesh. See
+[`fly/README.md`](fly/README.md) for the full design and the required `fly.toml`,
+and [`examples/fly-cluster`](examples/fly-cluster) for a runnable program.
 
 ## Voter / non-voter
 
