@@ -11,6 +11,7 @@ import (
 	"net/rpc"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -385,6 +386,14 @@ func (n *Node) DemoteVoter(nodeID string) error {
 	return n.raft.DemoteVoter(raft.ServerID(nodeID), 0, n.config.ApplyTimeout).Error()
 }
 
+// TransferLeadership asks Raft to move leadership to another up-to-date voter.
+// It is used on graceful shutdown so a node can hand off before it leaves,
+// avoiding an election timeout. Safe to call on a non-leader (Raft returns an
+// error the caller may ignore). Returns once the transfer completes or fails.
+func (n *Node) TransferLeadership() error {
+	return n.raft.LeadershipTransfer().Error()
+}
+
 // --- RPC ---
 
 type RPCJoinRequest struct {
@@ -417,7 +426,70 @@ type RPCHelloResponse struct {
 	SnapshotFormatVersion int
 }
 
+// RPCStatusRequest/RPCStatusResponse back a read-only cluster-status probe.
+// Discovery layers that cannot observe peer Raft state out-of-band (e.g. the
+// fly package, where Fly's internal DNS carries no bootstrapping/voter flags)
+// use it to detect an already-formed cluster before deciding whether to
+// bootstrap a new one — avoiding split-brain when a fresh, low-id machine
+// boots into an existing cluster.
+type RPCStatusRequest struct{}
+type RPCStatusResponse struct {
+	NodeID     string
+	IsLeader   bool
+	LeaderAddr string // current Raft leader's advertise addr, "" if none is known
+	Voters     int    // number of voters in this node's view of the configuration
+}
+
 type RPCService struct{ node *Node }
+
+// Status reports this node's leadership view. Read-only and always succeeds.
+func (s *RPCService) Status(req *RPCStatusRequest, resp *RPCStatusResponse) error {
+	resp.NodeID = s.node.config.NodeID
+	resp.IsLeader = s.node.raft.State() == raft.Leader
+	addr, _ := s.node.raft.LeaderWithID()
+	resp.LeaderAddr = string(addr)
+	if cf := s.node.raft.GetConfiguration(); cf.Error() == nil {
+		for _, srv := range cf.Configuration().Servers {
+			if srv.Suffrage == raft.Voter {
+				resp.Voters++
+			}
+		}
+	}
+	return nil
+}
+
+// ProbeStatus dials the RPC sidecar of the node at raftAddr (host:port; the RPC
+// server listens on port+1) and returns its cluster status. It lets a starting
+// node detect an already-formed cluster before deciding to bootstrap. Pass the
+// same TLS config the cluster uses, or nil for plaintext. A non-nil error means
+// the peer was unreachable or not yet serving RPC.
+func ProbeStatus(raftAddr string, tlsConfig *tls.Config, timeout time.Duration) (RPCStatusResponse, error) {
+	rpcAddr, err := rpcAddrFrom(raftAddr)
+	if err != nil {
+		return RPCStatusResponse{}, err
+	}
+	dialer := &net.Dialer{Timeout: timeout}
+	var conn net.Conn
+	if tlsConfig != nil {
+		conn, err = tls.DialWithDialer(dialer, "tcp", rpcAddr, tlsConfig)
+	} else {
+		conn, err = dialer.Dial("tcp", rpcAddr)
+	}
+	if err != nil {
+		return RPCStatusResponse{}, err
+	}
+	defer conn.Close()
+	if timeout > 0 {
+		_ = conn.SetDeadline(time.Now().Add(timeout))
+	}
+	client := rpc.NewClient(conn)
+	defer client.Close()
+	var resp RPCStatusResponse
+	if err := client.Call("Colmena.Status", &RPCStatusRequest{}, &resp); err != nil {
+		return RPCStatusResponse{}, err
+	}
+	return resp, nil
+}
 
 // Hello is a version handshake. It never fails: the goal is to surface
 // incompatibilities through logs and metrics without breaking clusters that
@@ -587,9 +659,9 @@ func (n *Node) startRPC() error {
 func rpcAddrFrom(raftAddr string) (string, error) {
 	host, portStr, err := net.SplitHostPort(raftAddr)
 	if err != nil { return "", fmt.Errorf("colmena: parse addr %q: %w", raftAddr, err) }
-	var port int
-	fmt.Sscanf(portStr, "%d", &port)
-	return net.JoinHostPort(host, fmt.Sprintf("%d", port+1)), nil
+	port, err := strconv.Atoi(portStr)
+	if err != nil { return "", fmt.Errorf("colmena: parse port %q: %w", portStr, err) }
+	return net.JoinHostPort(host, strconv.Itoa(port+1)), nil
 }
 
 // leaseLoop periodically checks Raft's last_contact stat and extends the

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mentasystems/colmena"
+	"github.com/mentasystems/colmena/cluster"
 )
 
 // Cluster is the live state of a node started via Start. It wraps the
@@ -326,61 +327,16 @@ func (c *Cluster) Close() error {
 	return nil
 }
 
-// decideRole inspects the snapshot of discovered peers and decides
-// whether this node should bootstrap, join an existing cluster (and as
-// what role), or wait for a different node to bootstrap first.
-//
-// Returns:
-//
-//   - role: the JoinRole to use (Voter or Nonvoter). Ignored when bootstrap=true.
-//   - joinAddr: a peer to join via, or "" if we should bootstrap or wait.
-//   - bootstrap: true if we should bootstrap a new cluster ourselves.
+// decideRole / decideRoleFromPeers / formedPeerAddrs / roleName are thin
+// wrappers over the shared cluster package so the lan and fly transports run
+// the exact same bootstrap-vs-join election logic. The lowercase names are
+// kept so the existing lan tests (bootstrap_test.go) compile unchanged.
 func decideRole(myID string, peers []peer, voterQuorum int) (colmena.JoinRole, string, bool) {
-	addr, role, formed := decideRoleFromPeers(peers, voterQuorum)
-	if formed {
-		return role, addr, false
-	}
-	// No formed cluster. Either bootstrap (if we win the election) or
-	// wait for someone else to bootstrap.
-	candidates := []string{myID}
-	for _, p := range peers {
-		if p.Bootstrapping {
-			candidates = append(candidates, p.NodeID)
-		}
-	}
-	sort.Strings(candidates)
-	if candidates[0] == myID {
-		return colmena.JoinAsVoter, "", true
-	}
-	return colmena.JoinAsVoter, "", false
+	return cluster.DecideRole(myID, peers, voterQuorum)
 }
 
-// decideRoleFromPeers scans peers for one that has finished bootstrapping
-// (bootstrapping=false). If found, returns its advertise address and the
-// role this node should join as based on the current voter count.
 func decideRoleFromPeers(peers []peer, voterQuorum int) (joinAddr string, role colmena.JoinRole, formed bool) {
-	voters := 0
-	for _, p := range peers {
-		if p.Bootstrapping {
-			continue
-		}
-		formed = true
-		if p.Voter {
-			voters++
-		}
-		if joinAddr == "" {
-			joinAddr = p.Advertise
-		}
-	}
-	if !formed {
-		return "", colmena.JoinAsVoter, false
-	}
-	if voters < voterQuorum {
-		role = colmena.JoinAsVoter
-	} else {
-		role = colmena.JoinAsNonvoter
-	}
-	return joinAddr, role, true
+	return cluster.DecideRoleFromPeers(peers, voterQuorum)
 }
 
 // waitForFormedCluster blocks until at least one peer advertises
@@ -405,27 +361,10 @@ func waitForFormedCluster(ctx context.Context, d *discovery, timeout time.Durati
 	}
 }
 
-// formedPeerAddrs returns every formed peer's advertise address with
-// `preferred` first, so colmena.join() can fall through to the next
-// candidate if the first one happens to be a follower whose leader
-// redirect fails (e.g. during a brief leadership transition).
 func formedPeerAddrs(peers []peer, preferred string) []string {
-	out := []string{}
-	if preferred != "" {
-		out = append(out, preferred)
-	}
-	for _, p := range peers {
-		if p.Bootstrapping || p.Advertise == "" || p.Advertise == preferred {
-			continue
-		}
-		out = append(out, p.Advertise)
-	}
-	return out
+	return cluster.FormedPeerAddrs(peers, preferred)
 }
 
 func roleName(r colmena.JoinRole) string {
-	if r == colmena.JoinAsNonvoter {
-		return "non-voter"
-	}
-	return "voter"
+	return cluster.RoleName(r)
 }

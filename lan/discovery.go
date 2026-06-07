@@ -11,15 +11,14 @@ import (
 	"time"
 
 	"github.com/grandcat/zeroconf"
+	"github.com/mentasystems/colmena/cluster"
 )
 
-// peer is a normalized view of an mDNS-discovered Colmena node.
-type peer struct {
-	NodeID        string // persistent UUID of the peer
-	Advertise     string // host:port the peer wants to be dialed at
-	Bootstrapping bool   // true while the peer is still in the discovery phase
-	Voter         bool   // true if currently a Raft voter (best-effort, eventually consistent)
-}
+// peer aliases cluster.Peer so the lan package and the shared election helpers
+// agree on a single model. Field names match 1:1 (NodeID, Advertise,
+// Bootstrapping, Voter); cluster.Peer's LastSeen field is unused on the LAN —
+// peerRecord.lastSeen tracks mDNS sightings instead.
+type peer = cluster.Peer
 
 // peerRecord wraps a peer with the timestamp of its last mDNS sighting.
 // Used to age entries out of the discovery cache, so a node that
