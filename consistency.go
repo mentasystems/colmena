@@ -43,12 +43,21 @@ const (
 	// reading stale data would cause incorrect behavior.
 	ConsistencyStrong
 
-	// ConsistencyLease reads locally while the leader lease is valid,
-	// falling back to ConsistencyWeak (leader forwarding) when the lease
-	// expires. The leader piggybacks a lease timestamp on Raft heartbeats;
-	// followers can serve reads locally as long as the lease hasn't expired.
-	// This gives ~6µs reads with at most LeaseTimeout staleness.
-	// Use for: most applications that want fast reads with bounded staleness.
+	// ConsistencyLease reads locally while the local read lease is valid,
+	// falling back to ConsistencyWeak (leader forwarding) when it expires.
+	//
+	// The lease is granted locally, not coordinated with the leader: a
+	// background loop polls Raft's last-contact stat every
+	// HeartbeatTimeout/4 and extends the lease by HeartbeatTimeout/2 while
+	// the leader heartbeat is fresh. That makes Lease a freshness
+	// *heuristic*, not a linearizability guarantee: worst-case staleness is
+	// ~0.75 × HeartbeatTimeout (poll age + grant window), and a follower
+	// that silently lost its leader can keep serving local reads for up to
+	// the remaining lease window before falling back to forwarding.
+	// This gives ~6µs reads with staleness bounded by ~HeartbeatTimeout.
+	// Use for: read-heavy paths that want local-read speed and can tolerate
+	// up to a heartbeat of staleness; use Strong when correctness depends
+	// on reading the latest committed state.
 	ConsistencyLease
 )
 

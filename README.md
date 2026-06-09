@@ -676,6 +676,8 @@ Colmena wraps every replicated/persisted blob in a 10-byte self-describing envel
 
 Each Colmena release keeps the decoder for the previous envelope version in place for **at least one release**, so rolling upgrades (stop node → upgrade → rejoin, one at a time) work without wiping data. Legacy pre-envelope shapes (raw JSON commands, raw-SQLite v0.2.0 snapshots, unenveloped tar v0.3–v0.5 snapshots) are still recognized for backward compatibility. A node that sees an **unknown newer** envelope version returns `ErrUnsupportedFormatVersion` instead of corrupting state — upgrade the lagging node before proceeding.
 
+> **v0.11 upgrade note:** v0.11 writes command format **v2** (typed statement args: `int64` keeps full precision, `[]byte` stays a blob, `time.Time` survives). Pre-v0.11 nodes cannot apply v2 entries, so upgrade **every** node to v0.11 before resuming writes; v0.11 nodes keep reading the old v1 entries already in the log.
+
 Call `node.Version()` to read the current library version at runtime.
 
 ## Limitations
@@ -684,6 +686,7 @@ Call `node.Version()` to read the current library version at runtime.
 - **Single writer** — all writes serialize through the Raft leader. This is inherent to Raft consensus.
 - **Statement-level replication** — SQL statements (not WAL pages) are replicated. This is simpler but means the above limitation applies.
 - **Reads in transactions** — `tx.Query()` reads from local SQLite and won't see uncommitted writes buffered in the same transaction.
+- **Row counts in transactions** — statements buffered in a transaction don't execute until `Commit`, so `res.RowsAffected()`/`res.LastInsertId()` return `ErrTxResultPending` before Commit (and the real values after it). The guard-then-decide idiom (`UPDATE ... WHERE claimed_at IS NULL`, check the count, then commit or roll back) cannot work through `database/sql` transactions — use a plain `Exec` (single statement, executes immediately) or `ExecMulti` and check the returned counts instead.
 - **Minimum 3 nodes** for fault tolerance — 2 nodes is worse than 1 (no quorum if either fails).
 
 ## License

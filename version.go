@@ -2,7 +2,7 @@ package colmena
 
 // LibraryVersion is the semver string for the current Colmena release.
 // Bump on every tagged release. Used by Version() and exposed in Stats().
-const LibraryVersion = "0.10.0"
+const LibraryVersion = "0.11.0"
 
 // Wire format versions. Each envelope type has its own monotonically
 // increasing version. A node that reads an envelope with an unknown (newer)
@@ -16,8 +16,10 @@ const LibraryVersion = "0.10.0"
 const (
 	// CommandFormatVersion is the current version of the Command envelope
 	// written to the Raft log. v1 is JSON-encoded Command wrapped with the
-	// 10-byte header (see format.go).
-	CommandFormatVersion = 1
+	// 10-byte header (see format.go). v2 (0.11.0) encodes statement args as
+	// TaggedValues so int64/[]byte/time.Time survive replication intact
+	// (plain JSON coerced every number to float64 and []byte to base64 TEXT).
+	CommandFormatVersion = 2
 
 	// SnapshotFormatVersion is the current version of the FSM snapshot
 	// envelope. v1 is a tar archive of SQLite files wrapped with the header.

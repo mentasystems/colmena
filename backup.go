@@ -143,51 +143,64 @@ func (b *backupManager) stop() {
 
 // takeSnapshot takes a full database snapshot, starts a new generation,
 // and checkpoints the WAL to compact it.
+//
+// Ordering and mechanism are both load-bearing:
+//
+//   - The checkpoint runs BEFORE the snapshot. SQLite resets the WAL at the
+//     first write after a completed checkpoint, and every frame written
+//     before the snapshot is covered by the snapshot itself — so a reset can
+//     never drop a frame the backend still needs. (Checkpointing after the
+//     snapshot opened a window where frames written between the WAL upload
+//     and the reset vanished from the backend until the next generation.)
+//   - The snapshot uses the SQLite Online Backup API (store.backupTo), not a
+//     raw copy of the main DB file. In WAL mode the main file alone is not
+//     the current state, and a concurrent checkpoint can rewrite it mid-copy,
+//     tearing the streamed snapshot.
+//
+// Restore correctness: the snapshot is complete up to its start; the WAL
+// uploaded afterwards may overlap it, but WAL frames are page images, so
+// replaying already-applied frames on restore is idempotent.
 func (b *backupManager) takeSnapshot() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	ctx := context.Background()
 
+	// PASSIVE checkpoint compacts the WAL without blocking writers.
+	if _, err := b.store.writer.Exec("PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
+		log.Printf("colmena: checkpoint before snapshot (non-fatal): %v", err)
+	}
+
 	// Generate new generation ID.
 	b.generation = generateID()
 
-	// We need a consistent view: hold a read transaction to prevent
-	// any checkpoint from modifying the DB file while we copy it.
-	tx, err := b.store.reader.Begin()
-	if err != nil {
-		return fmt.Errorf("begin read tx: %w", err)
-	}
-	defer tx.Rollback()
+	tmpPath := b.store.dbPath + ".backup-snapshot"
+	_ = os.Remove(tmpPath) // safe-ignore: best-effort pre-clean (a leftover would break VACUUM INTO); backupTo surfaces any real problem
+	defer os.Remove(tmpPath)
 
-	// Copy the main database file.
-	dbFile, err := os.Open(b.store.dbPath)
+	if err := b.store.backupTo(tmpPath); err != nil {
+		return fmt.Errorf("backup snapshot: %w", err)
+	}
+
+	dbFile, err := os.Open(tmpPath)
 	if err != nil {
-		return fmt.Errorf("open db file: %w", err)
+		return fmt.Errorf("open snapshot file: %w", err)
 	}
 	defer dbFile.Close()
 
 	stat, err := dbFile.Stat()
 	if err != nil {
-		return fmt.Errorf("stat db file: %w", err)
+		return fmt.Errorf("stat snapshot file: %w", err)
 	}
 
 	if err := b.backend.WriteSnapshot(ctx, b.generation, dbFile, stat.Size()); err != nil {
 		return fmt.Errorf("write snapshot: %w", err)
 	}
 
-	// Also back up the current WAL file so the snapshot + WAL are consistent.
+	// Also back up the current WAL so writes since the snapshot are covered.
 	if err := b.writeWALToBackend(ctx); err != nil {
 		// WAL might not exist yet if no writes happened. That's OK.
 		log.Printf("colmena: backup WAL after snapshot (non-fatal): %v", err)
-	}
-
-	// Release the read transaction before checkpointing.
-	tx.Rollback()
-
-	// PASSIVE checkpoint compacts the WAL without blocking writers.
-	if _, err := b.store.writer.Exec("PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
-		log.Printf("colmena: checkpoint after snapshot (non-fatal): %v", err)
 	}
 
 	return nil

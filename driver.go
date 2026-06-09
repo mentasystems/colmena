@@ -94,7 +94,7 @@ func (c *colmenaConn) QueryContext(ctx context.Context, query string, args []dri
 		if c.node.IsLeader() {
 			return c.localQuery(query, iArgs)
 		}
-		return c.leaderQuery(query, iArgs)
+		return c.leaderQuery(query, iArgs, ConsistencyWeak)
 	case ConsistencyStrong:
 		if c.node.IsLeader() {
 			if err := c.node.verifyLeader(); err != nil {
@@ -102,7 +102,7 @@ func (c *colmenaConn) QueryContext(ctx context.Context, query string, args []dri
 			}
 			return c.localQuery(query, iArgs)
 		}
-		return c.leaderQuery(query, iArgs)
+		return c.leaderQuery(query, iArgs, ConsistencyStrong)
 	case ConsistencyLease:
 		if c.node.IsLeader() {
 			return c.localQuery(query, iArgs)
@@ -110,7 +110,8 @@ func (c *colmenaConn) QueryContext(ctx context.Context, query string, args []dri
 		if c.node.lease.valid() {
 			return c.localQuery(query, iArgs)
 		}
-		return c.leaderQuery(query, iArgs)
+		// Lease fallback wants leader freshness, not a quorum check: Weak.
+		return c.leaderQuery(query, iArgs, ConsistencyWeak)
 	default:
 		return c.localQuery(query, iArgs)
 	}
@@ -129,8 +130,9 @@ func (c *colmenaConn) localQuery(query string, args []any) (driver.Rows, error) 
 	return newWrappedRows(rows)
 }
 
-func (c *colmenaConn) leaderQuery(query string, args []any) (driver.Rows, error) {
-	resp, err := c.node.forwardQuery(c.dbName, query, args)
+// any-ok: driver args are heterogeneous by contract (database/sql driver.Value)
+func (c *colmenaConn) leaderQuery(query string, args []any, consistency ConsistencyLevel) (driver.Rows, error) {
+	resp, err := c.node.forwardQuery(/* dbName */ c.dbName, /* sqlStr */ query, args, consistency)
 	if err != nil {
 		return nil, err
 	}

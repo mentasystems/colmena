@@ -343,10 +343,15 @@ func (c *Cluster) sweepDeadVoters(lastSeen map[string]time.Time) {
 	}
 }
 
-// promoteIfNeeded restores the target voter quorum by promoting the non-voter
-// with the smallest NodeID when the cluster has fewer voters than VoterQuorum.
-// Choosing deterministically means leaders that swap during the same outage
-// agree on the same candidate.
+// promoteIfNeeded restores the target voter quorum by promoting a non-voter
+// when the cluster has fewer voters than VoterQuorum. Candidates are tried in
+// NodeID order (deterministic, so leaders that swap during the same outage
+// agree), but each is probed first and a caught-up candidate is preferred: a
+// brand-new machine still replaying the log would join the quorum without
+// being able to ack appends, stalling commits until it catches up. If no
+// candidate reports caught-up (e.g. all run pre-v0.11 and don't send the
+// flag), the first reachable one is promoted anyway — a temporarily slow
+// quorum beats an indefinitely degraded one.
 func (c *Cluster) promoteIfNeeded() {
 	servers, err := c.Node.Nodes()
 	if err != nil {
@@ -367,7 +372,27 @@ func (c *Cluster) promoteIfNeeded() {
 		return
 	}
 	sort.Strings(nonvoterIDs)
-	candidate := nonvoterIDs[0]
+
+	candidate := ""
+	for _, id := range nonvoterIDs {
+		st, probeErr := colmena.ProbeStatus(addrByID[id], c.cfg.TLSConfig, 2*time.Second)
+		if probeErr != nil {
+			c.logger.Printf("promote: candidate %s unreachable: %v", id, probeErr)
+			continue
+		}
+		if st.CaughtUp {
+			candidate = id
+			break
+		}
+		if candidate == "" {
+			candidate = id // reachable fallback if nobody reports caught-up
+		}
+		c.logger.Printf("promote: candidate %s reachable but not caught up", id)
+	}
+	if candidate == "" {
+		c.logger.Printf("promote: no reachable non-voter candidate (%d/%d voters)", voters, c.cfg.VoterQuorum)
+		return
+	}
 	c.logger.Printf("promoting non-voter %s to voter (%d/%d voters before promote)", candidate, voters, c.cfg.VoterQuorum)
 	if err := c.Node.AddVoter(candidate, addrByID[candidate]); err != nil {
 		c.logger.Printf("promote: %v", err)
@@ -441,14 +466,38 @@ func (c *Cluster) GracefulLeave(ctx context.Context) error {
 	// Best-effort self-removal. RemoveServer only works on the leader: if we
 	// successfully handed off we're no longer leader and skip it, leaving the
 	// new leader's sweep to reap us once we vanish from DNS. If the transfer
-	// failed (e.g. single-node cluster) we may still be leader — try anyway.
+	// failed we may still be leader — try anyway, UNLESS we are the only
+	// voter: removing the last voter leaves an empty configuration that can
+	// never elect a leader again, bricking the data dir as a cluster member
+	// (the single-machine Fly rolling-deploy case).
 	if c.Node.IsLeader() {
-		if err := c.Node.RemoveNode(myID); err != nil {
+		if c.voterCount() <= 1 {
+			c.logger.Printf("sole voter: skipping self-removal so the cluster can restart")
+		} else if err := c.Node.RemoveNode(myID); err != nil {
 			c.logger.Printf("remove self: %v (sweeper will reap)", err)
 		}
 	}
 
 	return c.Close()
+}
+
+// voterCount returns the number of voters in this node's view of the Raft
+// configuration. Returns 1 on error: self-removal is the destructive act, so
+// when the configuration can't be read the guard errs toward skipping it
+// (peers just wait out the dead-voter sweep) rather than risking the removal
+// of the last voter.
+func (c *Cluster) voterCount() int {
+	servers, err := c.Node.Nodes()
+	if err != nil {
+		return 1
+	}
+	voters := 0
+	for _, s := range servers {
+		if s.Suffrage.String() == "Voter" {
+			voters++
+		}
+	}
+	return voters
 }
 
 // waitForStepDown blocks until this node is no longer the Raft leader, or the

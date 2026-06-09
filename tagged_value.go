@@ -41,6 +41,12 @@ func encodeTaggedValue(v any) TaggedValue {
 	case int:
 		b, _ := json.Marshal(int64(x))
 		return TaggedValue{T: tagInt, V: b}
+	case int8:
+		b, _ := json.Marshal(int64(x)) // safe-ignore: marshaling an int64 cannot fail
+		return TaggedValue{T: tagInt, V: b}
+	case int16:
+		b, _ := json.Marshal(int64(x)) // safe-ignore: marshaling an int64 cannot fail
+		return TaggedValue{T: tagInt, V: b}
 	case int32:
 		b, _ := json.Marshal(int64(x))
 		return TaggedValue{T: tagInt, V: b}
@@ -49,6 +55,12 @@ func encodeTaggedValue(v any) TaggedValue {
 		return TaggedValue{T: tagInt, V: b}
 	case uint:
 		b, _ := json.Marshal(int64(x))
+		return TaggedValue{T: tagInt, V: b}
+	case uint8:
+		b, _ := json.Marshal(int64(x)) // safe-ignore: marshaling an int64 cannot fail
+		return TaggedValue{T: tagInt, V: b}
+	case uint16:
+		b, _ := json.Marshal(int64(x)) // safe-ignore: marshaling an int64 cannot fail
 		return TaggedValue{T: tagInt, V: b}
 	case uint32:
 		b, _ := json.Marshal(int64(x))

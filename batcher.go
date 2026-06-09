@@ -68,9 +68,14 @@ func (b *WriteBatcher) submit(cmd *Command) (*ApplyResult, error) {
 	return res.resp, res.err
 }
 
-// flush collects all pending entries, merges their statements into a single
-// CommandExecuteMulti, and applies it through Raft. Individual results are
-// distributed back to each caller.
+// flush collects all pending entries, groups them by target database, and
+// applies one merged CommandExecuteMulti per database through Raft.
+// Individual results are distributed back to each caller.
+//
+// Grouping by DB is load-bearing: a Command carries a single DB field and the
+// FSM routes the whole command to that one store, so entries for different
+// databases must never share a merged command — the other database's
+// statements would execute against the wrong SQLite file.
 func (b *WriteBatcher) flush() {
 	b.mu.Lock()
 	if len(b.pending) == 0 {
@@ -82,6 +87,26 @@ func (b *WriteBatcher) flush() {
 	b.stopTimer()
 	b.mu.Unlock()
 
+	groups := make(map[string][]batchEntry)
+	var order []string // deterministic flush order: first-submitted DB first
+	for _, e := range entries {
+		db := e.cmd.DB
+		if db == "" {
+			db = "default" // FSM treats "" as "default"; group them together
+		}
+		if _, ok := groups[db]; !ok {
+			order = append(order, db)
+		}
+		groups[db] = append(groups[db], e)
+	}
+	for _, db := range order {
+		b.flushGroup(db, groups[db])
+	}
+}
+
+// flushGroup merges the statements of same-DB entries into one
+// CommandExecuteMulti and applies it, demuxing results back to each caller.
+func (b *WriteBatcher) flushGroup(db string, entries []batchEntry) {
 	// Single-entry batch: apply directly without merging.
 	if len(entries) == 1 {
 		resp, err := b.applyDirect(entries[0].cmd)
@@ -99,7 +124,7 @@ func (b *WriteBatcher) flush() {
 
 	merged := &Command{
 		Type:       CommandExecuteMulti,
-		DB:         entries[0].cmd.DB,
+		DB:         db,
 		Statements: allStmts,
 	}
 

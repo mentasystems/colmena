@@ -3,6 +3,7 @@ package colmena
 import (
 	"crypto/tls"
 	"database/sql"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,14 @@ import (
 	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
 )
 
+func init() {
+	// RPCQueryRequest.Args travels over net/rpc as []interface{}. gob
+	// auto-registers the basic types (int64, float64, string, []byte, bool)
+	// but not time.Time, so a forwarded query with a time argument would
+	// fail to encode without this.
+	gob.Register(time.Time{})
+}
+
 // ErrNotLeader is returned when a write is attempted on a non-leader node
 // and the leader address is unknown for forwarding.
 var ErrNotLeader = errors.New("colmena: not the leader")
@@ -34,6 +43,9 @@ type Node struct {
 	rpcServer   *rpc.Server
 	rpcListener net.Listener
 	rpcPool     *rpcPool
+	rpcConns    map[net.Conn]struct{}
+	rpcConnsMu  sync.Mutex
+	rpcWG       sync.WaitGroup // in-flight RPC handlers (drained in Close)
 
 	batcher  *WriteBatcher
 	lease    *readLease
@@ -124,6 +136,7 @@ func New(cfg Config) (*Node, error) {
 		raft:       r,
 		fsm:        f,
 		rpcPool:    newRPCPool(cfg.TLSConfig, cfg.NodeID),
+		rpcConns:   make(map[net.Conn]struct{}),
 		handlers:   handlerRegistry{handlers: make(map[string]func([]byte) ([]byte, error))},
 		dbs:        make(map[string]*sql.DB),
 	}
@@ -198,10 +211,16 @@ func (n *Node) OpenDB(name string, consistency ConsistencyLevel) *sql.DB {
 	return db
 }
 
-func (n *Node) IsLeader() bool            { return n.raft.State() == raft.Leader }
-func (n *Node) LeaderAddr() string         { _, id := n.raft.LeaderWithID(); return string(id) }
-func (n *Node) NodeID() string             { return n.config.NodeID }
-func (n *Node) Stats() map[string]string   { return n.raft.Stats() }
+func (n *Node) IsLeader() bool { return n.raft.State() == raft.Leader }
+
+// LeaderAddr returns the current leader's advertise address ("" if unknown).
+func (n *Node) LeaderAddr() string { addr, _ := n.raft.LeaderWithID(); return string(addr) }
+
+// LeaderID returns the current leader's node ID ("" if unknown).
+func (n *Node) LeaderID() string { _, id := n.raft.LeaderWithID(); return string(id) }
+
+func (n *Node) NodeID() string           { return n.config.NodeID }
+func (n *Node) Stats() map[string]string { return n.raft.Stats() }
 
 // Close shuts down the node gracefully. Safe to call multiple times.
 func (n *Node) Close() error {
@@ -222,6 +241,16 @@ func (n *Node) Close() error {
 	n.dbsMu.Unlock()
 
 	if n.rpcListener != nil { n.rpcListener.Close() }
+	// Force-close live RPC connections so idle ServeConn loops exit, then
+	// drain in-flight handlers before tearing down stores and raft — a
+	// handler past the listener close must not race st.query()/applyRaft
+	// against the teardown below.
+	n.rpcConnsMu.Lock()
+	for c := range n.rpcConns {
+		_ = c.Close() // safe-ignore: force-closing peers' conns at shutdown; nothing to do on error
+	}
+	n.rpcConnsMu.Unlock()
+	n.rpcWG.Wait()
 	if n.rpcPool != nil { n.rpcPool.close() }
 
 	if n.raft != nil {
@@ -294,7 +323,8 @@ func (n *Node) forwardExecute(data []byte) (*ApplyResult, error) {
 	return &ApplyResult{Results: resp.Results}, nil
 }
 
-func (n *Node) forwardQuery(dbName, sqlStr string, args []any) (*RPCQueryResponse, error) {
+// any-ok: query args are heterogeneous by contract (database/sql driver.Value)
+func (n *Node) forwardQuery(dbName, sqlStr string, args []any, consistency ConsistencyLevel) (*RPCQueryResponse, error) {
 	leaderAddr, _ := n.raft.LeaderWithID()
 	if leaderAddr == "" { return nil, ErrNotLeader }
 	addr := string(leaderAddr)
@@ -303,7 +333,7 @@ func (n *Node) forwardQuery(dbName, sqlStr string, args []any) (*RPCQueryRespons
 	n.metrics.rpcForwardsTotal.Add(1)
 	iArgs := make([]any, len(args))
 	copy(iArgs, args)
-	req := &RPCQueryRequest{DB: dbName, SQL: sqlStr, Args: iArgs}
+	req := &RPCQueryRequest{DB: dbName, SQL: sqlStr, Args: iArgs, Consistency: consistency}
 	var resp RPCQueryResponse
 	if err := client.Call("Colmena.Query", req, &resp); err != nil {
 		n.rpcPool.markFailed(addr)
@@ -438,12 +468,38 @@ type RPCStatusResponse struct {
 	IsLeader   bool
 	LeaderAddr string // current Raft leader's advertise addr, "" if none is known
 	Voters     int    // number of voters in this node's view of the configuration
+	// CaughtUp reports whether this node has fresh leader contact and has
+	// applied everything committed to it (always true on the leader). Used
+	// to gate voter promotion on a candidate that won't stall the quorum.
+	// Pre-v0.11 peers don't send it (gob decodes it as false).
+	CaughtUp bool
 }
 
 type RPCService struct{ node *Node }
 
-// Status reports this node's leadership view. Read-only and always succeeds.
+// errNodeClosed is returned to RPC peers whose request arrives while the
+// node is shutting down.
+var errNodeClosed = errors.New("colmena: node is shutting down") // global-ok: immutable sentinel error
+
+// begin registers an in-flight RPC handler so Close can drain handlers
+// before tearing down stores and raft. Returns false once the node is
+// closing; the caller must abort without touching node state.
+func (s *RPCService) begin() bool {
+	s.node.closedMu.Lock()
+	defer s.node.closedMu.Unlock()
+	if s.node.closed {
+		return false
+	}
+	s.node.rpcWG.Add(1)
+	return true
+}
+
+// Status reports this node's leadership view. Read-only.
 func (s *RPCService) Status(req *RPCStatusRequest, resp *RPCStatusResponse) error {
+	if !s.begin() {
+		return errNodeClosed
+	}
+	defer s.node.rpcWG.Done()
 	resp.NodeID = s.node.config.NodeID
 	resp.IsLeader = s.node.raft.State() == raft.Leader
 	addr, _ := s.node.raft.LeaderWithID()
@@ -455,7 +511,28 @@ func (s *RPCService) Status(req *RPCStatusRequest, resp *RPCStatusResponse) erro
 			}
 		}
 	}
+	resp.CaughtUp = resp.IsLeader || followerCaughtUp(s.node.raft.Stats())
 	return nil
+}
+
+// followerCaughtUp reports whether a follower has fresh leader contact and
+// has applied everything the leader committed to it, based on Raft stats.
+func followerCaughtUp(stats map[string]string) bool {
+	lc := stats["last_contact"]
+	if lc == "" || lc == "never" {
+		return false
+	}
+	if lc != "0" {
+		if d, err := time.ParseDuration(lc); err != nil || d > 2*time.Second {
+			return false
+		}
+	}
+	applied, e1 := strconv.ParseUint(stats["applied_index"], 10, 64)
+	commit, e2 := strconv.ParseUint(stats["commit_index"], 10, 64)
+	if e1 != nil || e2 != nil {
+		return false
+	}
+	return applied >= commit
 }
 
 // ProbeStatus dials the RPC sidecar of the node at raftAddr (host:port; the RPC
@@ -517,6 +594,8 @@ func (s *RPCService) Hello(req *RPCHelloRequest, resp *RPCHelloResponse) error {
 }
 
 func (s *RPCService) Execute(req *RPCExecuteRequest, resp *RPCExecuteResponse) error {
+	if !s.begin() { resp.Error = errNodeClosed.Error(); return nil }
+	defer s.node.rpcWG.Done()
 	if s.node.raft.State() != raft.Leader { resp.Error = "not the leader"; return nil }
 	result, err := s.node.applyRaft(req.Command)
 	if err != nil { resp.Error = err.Error(); return nil }
@@ -524,7 +603,22 @@ func (s *RPCService) Execute(req *RPCExecuteRequest, resp *RPCExecuteResponse) e
 	return nil
 }
 
+// Query serves a read forwarded from a follower. Forwarded reads exist to
+// reach the leader's fresh state, so the handler is leadership-gated like
+// Execute: a deposed leader answering from its local SQLite would silently
+// return stale data (writes mis-routed the same way at least fail loudly).
+// For Strong reads it re-verifies leadership against a quorum, preserving
+// linearizability end-to-end.
 func (s *RPCService) Query(req *RPCQueryRequest, resp *RPCQueryResponse) error {
+	if !s.begin() { resp.Error = errNodeClosed.Error(); return nil }
+	defer s.node.rpcWG.Done()
+	if s.node.raft.State() != raft.Leader { resp.Error = "not the leader"; return nil }
+	if req.Consistency == ConsistencyStrong {
+		if err := s.node.verifyLeader(); err != nil {
+			resp.Error = fmt.Sprintf("leader verification failed: %v", err)
+			return nil
+		}
+	}
 	dbName := req.DB
 	if dbName == "" { dbName = "default" }
 	st, err := s.node.stores.get(dbName)
@@ -555,6 +649,8 @@ func (s *RPCService) Query(req *RPCQueryRequest, resp *RPCQueryResponse) error {
 }
 
 func (s *RPCService) Forward(req *RPCForwardRequest, resp *RPCForwardResponse) error {
+	if !s.begin() { resp.Error = errNodeClosed.Error(); return nil }
+	defer s.node.rpcWG.Done()
 	if s.node.raft.State() != raft.Leader { resp.Error = "not the leader"; return nil }
 	data, err := s.node.handlers.call(req.Handler, req.Payload)
 	if err != nil { resp.Error = err.Error(); return nil }
@@ -563,6 +659,8 @@ func (s *RPCService) Forward(req *RPCForwardRequest, resp *RPCForwardResponse) e
 }
 
 func (s *RPCService) Join(req *RPCJoinRequest, resp *RPCJoinResponse) error {
+	if !s.begin() { resp.Error = errNodeClosed.Error(); return nil }
+	defer s.node.rpcWG.Done()
 	if s.node.raft.State() != raft.Leader {
 		leaderAddr, _ := s.node.raft.LeaderWithID()
 		resp.Error = "not the leader"
@@ -650,10 +748,43 @@ func (n *Node) startRPC() error {
 	}
 	if err != nil { return fmt.Errorf("colmena: listen RPC on %s: %w", rpcAddr, err) }
 	n.rpcListener = ln
-	go func() {
-		for { conn, err := ln.Accept(); if err != nil { return }; go n.rpcServer.ServeConn(conn) }
+	go func() { // goroutine-ok: exits when Close() closes the listener
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil { return }
+			n.rpcConnsMu.Lock()
+			n.rpcConns[conn] = struct{}{}
+			n.rpcConnsMu.Unlock()
+			// Conns are tracked in rpcConns and force-closed by Close(); the
+			// rolling read deadline bounds an idle peer's lifetime.
+			go func(c net.Conn) { // goroutine-ok: tracked via rpcConns + read deadline
+				n.rpcServer.ServeConn(&rpcIdleConn{Conn: c})
+				n.rpcConnsMu.Lock()
+				delete(n.rpcConns, c)
+				n.rpcConnsMu.Unlock()
+				_ = c.Close() // safe-ignore: conn teardown after ServeConn returns
+			}(conn)
+		}
 	}()
 	return nil
+}
+
+// rpcIdleTimeout bounds how long an accepted RPC connection may sit idle (or
+// stall mid-message) before the server drops it, so a peer that opens a
+// connection and never sends — or dies mid-request — can't pin a ServeConn
+// goroutine and its fd forever. It must stay comfortably above the client
+// pool's maxIdle (5 min) so a pooled client never reuses a connection the
+// server already killed.
+const rpcIdleTimeout = 15 * time.Minute
+
+// rpcIdleConn arms a rolling read deadline before every read.
+type rpcIdleConn struct{ net.Conn }
+
+func (c *rpcIdleConn) Read(b []byte) (int, error) {
+	if err := c.Conn.SetReadDeadline(time.Now().Add(rpcIdleTimeout)); err != nil {
+		return 0, err
+	}
+	return c.Conn.Read(b)
 }
 
 func rpcAddrFrom(raftAddr string) (string, error) {

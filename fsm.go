@@ -105,11 +105,16 @@ type RPCExecuteResponse struct {
 	Error   string
 }
 
-// RPCQueryRequest is sent from a follower to the leader for strong-consistency reads.
+// RPCQueryRequest is sent from a follower to the leader for forwarded reads.
 type RPCQueryRequest struct {
 	DB   string
 	SQL  string
 	Args []interface{}
+	// Consistency is the read level the originating node was asked for, so
+	// the leader can re-verify quorum for Strong reads. Zero means the
+	// request came from a pre-v0.11 peer (gob omits unknown fields) and is
+	// treated as Weak: leadership-gated, no quorum round-trip.
+	Consistency ConsistencyLevel
 }
 
 // RPCQueryResponse is the leader's response to a forwarded query.
@@ -119,9 +124,9 @@ type RPCQueryRequest struct {
 // *time.Time on the caller. TaggedRows (0.6.1+) preserves Go type via a
 // per-value discriminator.
 //
-// The leader fills both fields when it suspects the peer is legacy (it does
-// not know the peer version cheaply here, so it always fills TaggedRows and
-// leaves Rows empty). A v0.6.1+ reader prefers TaggedRows when present and
+// The leader cannot cheaply know the peer's version here, so it fills BOTH
+// fields on every response (doubling the payload — acceptable until v0.6.0
+// peers are extinct). A v0.6.1+ reader prefers TaggedRows when present and
 // falls back to Rows for compatibility with v0.6.0 leaders.
 type RPCQueryResponse struct {
 	Columns    []string

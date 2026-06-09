@@ -26,7 +26,6 @@ type rpcPool struct {
 type rpcEntry struct {
 	client   *rpc.Client
 	lastUsed time.Time
-	failures int
 
 	// peerVersion is populated by the Hello handshake after dial. Used for
 	// metrics/introspection; not consulted on the hot path.
@@ -53,12 +52,24 @@ func (p *rpcPool) get(raftAddr string) (*rpc.Client, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// Opportunistically evict idle entries for *other* addresses. Without
+	// this, a connection to an address we never dial again (e.g. a deposed
+	// leader, or a recycled machine IP on Fly) would keep its fd and reader
+	// goroutine alive for the life of the node.
+	now := time.Now()
+	for addr, e := range p.clients {
+		if addr != rpcAddr && now.Sub(e.lastUsed) >= p.maxIdle {
+			_ = e.client.Close() // safe-ignore: evicting an idle client; nothing to do on error
+			delete(p.clients, addr)
+		}
+	}
+
 	if entry, ok := p.clients[rpcAddr]; ok {
-		if entry.failures == 0 && time.Since(entry.lastUsed) < p.maxIdle {
-			entry.lastUsed = time.Now()
+		if now.Sub(entry.lastUsed) < p.maxIdle {
+			entry.lastUsed = now
 			return entry.client, nil
 		}
-		// Stale or failed connection — close and reconnect.
+		// Stale connection — close and reconnect.
 		entry.client.Close()
 		delete(p.clients, rpcAddr)
 	}
@@ -103,8 +114,10 @@ func (p *rpcPool) sayHello(rpcAddr string, entry *rpcEntry) {
 	}
 }
 
-// markFailed records that an RPC call to this address failed,
-// so the next get() will reconnect.
+// markFailed closes and evicts the cached connection for this address so the
+// next get() dials fresh. Closing eagerly matters: after a leader change the
+// failed address may never be get() again, and a merely-flagged entry would
+// leak its fd and reader goroutine for the life of the node.
 func (p *rpcPool) markFailed(raftAddr string) {
 	rpcAddr, err := rpcAddrFrom(raftAddr)
 	if err != nil {
@@ -115,7 +128,8 @@ func (p *rpcPool) markFailed(raftAddr string) {
 	defer p.mu.Unlock()
 
 	if entry, ok := p.clients[rpcAddr]; ok {
-		entry.failures++
+		_ = entry.client.Close() // safe-ignore: evicting a failed client; nothing to do on error
+		delete(p.clients, rpcAddr)
 	}
 }
 

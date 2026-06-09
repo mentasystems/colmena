@@ -1,0 +1,1383 @@
+{
+  "version": 1,
+  "captured_at": "2026-06-09T22:23:57Z",
+  "analyzers_version": "d8340afd40fee206",
+  "issue_count": 275,
+  "entries": [
+    {
+      "file": "backup.go",
+      "analyzer": "errcheck",
+      "line_hash": "5ed997d469280990"
+    },
+    {
+      "file": "backup.go",
+      "analyzer": "errcheck",
+      "line_hash": "7bb1f345bc90c3c7"
+    },
+    {
+      "file": "backup.go",
+      "analyzer": "errcheck",
+      "line_hash": "9c888a41acd2debf"
+    },
+    {
+      "file": "backup.go",
+      "analyzer": "errcheck",
+      "line_hash": "a4da9e452b44807c"
+    },
+    {
+      "file": "backup.go",
+      "analyzer": "errcheck",
+      "line_hash": "a4da9e452b44807c"
+    },
+    {
+      "file": "backup.go",
+      "analyzer": "errcheck",
+      "line_hash": "b06da1dac5c44b50"
+    },
+    {
+      "file": "backup.go",
+      "analyzer": "errcheck",
+      "line_hash": "ffb6d33d24da8a37"
+    },
+    {
+      "file": "backup.go",
+      "analyzer": "errcheck",
+      "line_hash": "ffb6d33d24da8a37"
+    },
+    {
+      "file": "backup.go",
+      "analyzer": "goroutine",
+      "line_hash": "5778d33891fefba5"
+    },
+    {
+      "file": "backup.go",
+      "analyzer": "shadow",
+      "line_hash": "0c7b786dc86a9166"
+    },
+    {
+      "file": "backup.go",
+      "analyzer": "shadow",
+      "line_hash": "301b4a02c75401c6"
+    },
+    {
+      "file": "backup.go",
+      "analyzer": "shadow",
+      "line_hash": "473a85f7f4c7f0e4"
+    },
+    {
+      "file": "backup.go",
+      "analyzer": "shadow",
+      "line_hash": "ef0292043301658c"
+    },
+    {
+      "file": "backup_local.go",
+      "analyzer": "errcheck",
+      "line_hash": "8e70fb35cabac6c8"
+    },
+    {
+      "file": "backup_local.go",
+      "analyzer": "errcheck",
+      "line_hash": "8e70fb35cabac6c8"
+    },
+    {
+      "file": "backup_local.go",
+      "analyzer": "shadow",
+      "line_hash": "2f9855e644ba60e9"
+    },
+    {
+      "file": "backup_local.go",
+      "analyzer": "shadow",
+      "line_hash": "2f9855e644ba60e9"
+    },
+    {
+      "file": "backup_local.go",
+      "analyzer": "shadow",
+      "line_hash": "4fd2e5c9d35b94ec"
+    },
+    {
+      "file": "backup_local.go",
+      "analyzer": "shadow",
+      "line_hash": "638a57aabbb6dc11"
+    },
+    {
+      "file": "backup_local.go",
+      "analyzer": "shadow",
+      "line_hash": "c1c45a1876f2f777"
+    },
+    {
+      "file": "batcher.go",
+      "analyzer": "goroutine",
+      "line_hash": "e6f8d5a3e501e231"
+    },
+    {
+      "file": "command.go",
+      "analyzer": "banany",
+      "line_hash": "5854c305af76dd3b"
+    },
+    {
+      "file": "command.go",
+      "analyzer": "namedargs",
+      "line_hash": "c7429749c1198db9"
+    },
+    {
+      "file": "command.go",
+      "analyzer": "namedargs",
+      "line_hash": "c7429749c1198db9"
+    },
+    {
+      "file": "driver.go",
+      "analyzer": "banany",
+      "line_hash": "2b592ac5fc37e382"
+    },
+    {
+      "file": "driver.go",
+      "analyzer": "banany",
+      "line_hash": "c73ce90bc6c41556"
+    },
+    {
+      "file": "driver.go",
+      "analyzer": "errcheck",
+      "line_hash": "3f38226b64035c0d"
+    },
+    {
+      "file": "driver.go",
+      "analyzer": "errcheck",
+      "line_hash": "ba10676ad03e1061"
+    },
+    {
+      "file": "driver.go",
+      "analyzer": "exhaustive",
+      "line_hash": "b8771536ee0138ea"
+    },
+    {
+      "file": "driver.go",
+      "analyzer": "noglobals",
+      "line_hash": "a617ce05ebfda688"
+    },
+    {
+      "file": "driver.go",
+      "analyzer": "noglobals",
+      "line_hash": "dd2f0f836a18f959"
+    },
+    {
+      "file": "examples/basic/main.go",
+      "analyzer": "shadow",
+      "line_hash": "991cd645c2638c1b"
+    },
+    {
+      "file": "examples/basic/main.go",
+      "analyzer": "shadow",
+      "line_hash": "be76938582ec818c"
+    },
+    {
+      "file": "examples/fly-cluster/main.go",
+      "analyzer": "errcheck",
+      "line_hash": "4204e73ed40d635f"
+    },
+    {
+      "file": "examples/fly-cluster/main.go",
+      "analyzer": "errcheck",
+      "line_hash": "70ec67a2a246e531"
+    },
+    {
+      "file": "examples/fly-cluster/main.go",
+      "analyzer": "namedargs",
+      "line_hash": "66255950fdb6bf18"
+    },
+    {
+      "file": "examples/fly-cluster/main.go",
+      "analyzer": "namedargs",
+      "line_hash": "66255950fdb6bf18"
+    },
+    {
+      "file": "examples/fly-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "04e45cc4370f9751"
+    },
+    {
+      "file": "examples/fly-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "0e9fcf86268d70fd"
+    },
+    {
+      "file": "examples/fly-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "2c25f813fcf546ae"
+    },
+    {
+      "file": "examples/fly-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "ec9cbf2cba19ef22"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "errcheck",
+      "line_hash": "2a9c6483ed630923"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "errcheck",
+      "line_hash": "9ca3e887a18d1bc9"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "errcheck",
+      "line_hash": "b012b43068288a59"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "errcheck",
+      "line_hash": "bf1f3092e48f4c9f"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "errcheck",
+      "line_hash": "dcc7d8bade39a9b6"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "namedargs",
+      "line_hash": "37e466d7027de1a3"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "namedargs",
+      "line_hash": "37e466d7027de1a3"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "namedargs",
+      "line_hash": "9799a3f0fe8cfc86"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "namedargs",
+      "line_hash": "9799a3f0fe8cfc86"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "namedargs",
+      "line_hash": "9799a3f0fe8cfc86"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "0d4e55388cb39924"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "0e9fcf86268d70fd"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "2668be42637896e5"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "322fee077d5a3ddb"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "5b7bd11599ad54df"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "6008d1c78385c506"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "7055a50369d31674"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "95526107eb71061a"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "c84f6d3764aa71a3"
+    },
+    {
+      "file": "examples/lan-cluster/main.go",
+      "analyzer": "shadow",
+      "line_hash": "f12eb3418956ed25"
+    },
+    {
+      "file": "fly/discovery.go",
+      "analyzer": "goroutine",
+      "line_hash": "e3e266e20427f442"
+    },
+    {
+      "file": "fly/discovery.go",
+      "analyzer": "namedargs",
+      "line_hash": "456d3be675e922c1"
+    },
+    {
+      "file": "fly/discovery.go",
+      "analyzer": "namedargs",
+      "line_hash": "456d3be675e922c1"
+    },
+    {
+      "file": "fly/discovery.go",
+      "analyzer": "namedargs",
+      "line_hash": "593adef882a3fe9c"
+    },
+    {
+      "file": "fly/discovery.go",
+      "analyzer": "namedargs",
+      "line_hash": "593adef882a3fe9c"
+    },
+    {
+      "file": "fly/fly.go",
+      "analyzer": "errcheck",
+      "line_hash": "0055c27b5df3a894"
+    },
+    {
+      "file": "fly/fly.go",
+      "analyzer": "errcheck",
+      "line_hash": "0055c27b5df3a894"
+    },
+    {
+      "file": "fly/fly.go",
+      "analyzer": "shadow",
+      "line_hash": "2a24ac0abdf5ddd4"
+    },
+    {
+      "file": "fly/fly.go",
+      "analyzer": "shadow",
+      "line_hash": "8566f4989e2cfe3f"
+    },
+    {
+      "file": "fly/fly.go",
+      "analyzer": "shadow",
+      "line_hash": "cb6a6adf8f9179af"
+    },
+    {
+      "file": "fly/fly.go",
+      "analyzer": "shadow",
+      "line_hash": "dee9234482e724b8"
+    },
+    {
+      "file": "format.go",
+      "analyzer": "noglobals",
+      "line_hash": "5fb87ef575d5504f"
+    },
+    {
+      "file": "format.go",
+      "analyzer": "noglobals",
+      "line_hash": "d6fe8f72564e633d"
+    },
+    {
+      "file": "fsm.go",
+      "analyzer": "banany",
+      "line_hash": "33a856d5877e5f09"
+    },
+    {
+      "file": "fsm.go",
+      "analyzer": "banany",
+      "line_hash": "b26709dad16a7f64"
+    },
+    {
+      "file": "fsm.go",
+      "analyzer": "shadow",
+      "line_hash": "1744ab72eaffa7d8"
+    },
+    {
+      "file": "fsm.go",
+      "analyzer": "shadow",
+      "line_hash": "b47566b392aaf1c0"
+    },
+    {
+      "file": "handler.go",
+      "analyzer": "shadow",
+      "line_hash": "350b2009de2a41e3"
+    },
+    {
+      "file": "jobs/admin.go",
+      "analyzer": "errcheck",
+      "line_hash": "1456bcff90c00f1b"
+    },
+    {
+      "file": "jobs/admin.go",
+      "analyzer": "errcheck",
+      "line_hash": "224a1cebfa8040ef"
+    },
+    {
+      "file": "jobs/admin.go",
+      "analyzer": "errcheck",
+      "line_hash": "87e77c56c5ee378b"
+    },
+    {
+      "file": "jobs/admin.go",
+      "analyzer": "errcheck",
+      "line_hash": "fba006c32f51c9e9"
+    },
+    {
+      "file": "jobs/admin.go",
+      "analyzer": "shadow",
+      "line_hash": "8a4338bdd61a0e61"
+    },
+    {
+      "file": "jobs/cron.go",
+      "analyzer": "namedargs",
+      "line_hash": "17fb350fb21fed13"
+    },
+    {
+      "file": "jobs/cron.go",
+      "analyzer": "namedargs",
+      "line_hash": "17fb350fb21fed13"
+    },
+    {
+      "file": "jobs/cron.go",
+      "analyzer": "namedargs",
+      "line_hash": "47952496b6442610"
+    },
+    {
+      "file": "jobs/cron.go",
+      "analyzer": "namedargs",
+      "line_hash": "47952496b6442610"
+    },
+    {
+      "file": "jobs/cron.go",
+      "analyzer": "namedargs",
+      "line_hash": "76db5e1ee7d058ef"
+    },
+    {
+      "file": "jobs/cron.go",
+      "analyzer": "namedargs",
+      "line_hash": "76db5e1ee7d058ef"
+    },
+    {
+      "file": "jobs/cron.go",
+      "analyzer": "namedargs",
+      "line_hash": "8539e31c1bbb46b4"
+    },
+    {
+      "file": "jobs/cron.go",
+      "analyzer": "namedargs",
+      "line_hash": "8539e31c1bbb46b4"
+    },
+    {
+      "file": "jobs/cron.go",
+      "analyzer": "namedargs",
+      "line_hash": "bb7d1fa791ea08f8"
+    },
+    {
+      "file": "jobs/cron.go",
+      "analyzer": "namedargs",
+      "line_hash": "bb7d1fa791ea08f8"
+    },
+    {
+      "file": "jobs/enqueue.go",
+      "analyzer": "namedargs",
+      "line_hash": "0d8fbce11d23a787"
+    },
+    {
+      "file": "jobs/enqueue.go",
+      "analyzer": "namedargs",
+      "line_hash": "0d8fbce11d23a787"
+    },
+    {
+      "file": "jobs/enqueue.go",
+      "analyzer": "noglobals",
+      "line_hash": "896387d2a232c38a"
+    },
+    {
+      "file": "jobs/enqueue.go",
+      "analyzer": "shadow",
+      "line_hash": "4f8af014d314280b"
+    },
+    {
+      "file": "jobs/manager.go",
+      "analyzer": "goroutine",
+      "line_hash": "5f6cbd74c7b2c1a2"
+    },
+    {
+      "file": "jobs/manager.go",
+      "analyzer": "goroutine",
+      "line_hash": "624600e84d2a9bfd"
+    },
+    {
+      "file": "jobs/manager.go",
+      "analyzer": "goroutine",
+      "line_hash": "90b598336c146377"
+    },
+    {
+      "file": "jobs/manager.go",
+      "analyzer": "goroutine",
+      "line_hash": "c1b8d440a93670db"
+    },
+    {
+      "file": "jobs/manager.go",
+      "analyzer": "noglobals",
+      "line_hash": "3bd91b1ee5677c20"
+    },
+    {
+      "file": "jobs/metrics.go",
+      "analyzer": "errcheck",
+      "line_hash": "fba006c32f51c9e9"
+    },
+    {
+      "file": "jobs/metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "194ffde58f5a45d3"
+    },
+    {
+      "file": "jobs/metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "194ffde58f5a45d3"
+    },
+    {
+      "file": "jobs/metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "5ff0892e2e721d32"
+    },
+    {
+      "file": "jobs/metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "5ff0892e2e721d32"
+    },
+    {
+      "file": "jobs/metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "727334fdb8e38187"
+    },
+    {
+      "file": "jobs/metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "727334fdb8e38187"
+    },
+    {
+      "file": "jobs/metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "a88875aac3266e19"
+    },
+    {
+      "file": "jobs/metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "a88875aac3266e19"
+    },
+    {
+      "file": "jobs/metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "ed8f776e9cf90f17"
+    },
+    {
+      "file": "jobs/metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "ed8f776e9cf90f17"
+    },
+    {
+      "file": "jobs/scheduler.go",
+      "analyzer": "shadow",
+      "line_hash": "98a6d77385a27158"
+    },
+    {
+      "file": "jobs/scheduler.go",
+      "analyzer": "shadow",
+      "line_hash": "ef02e898210143fd"
+    },
+    {
+      "file": "jobs/schema.go",
+      "analyzer": "noglobals",
+      "line_hash": "fad9316f14070e2f"
+    },
+    {
+      "file": "jobs/stats.go",
+      "analyzer": "shadow",
+      "line_hash": "83a77e196e28c79d"
+    },
+    {
+      "file": "jobs/stats.go",
+      "analyzer": "shadow",
+      "line_hash": "be1e85c991cf91b4"
+    },
+    {
+      "file": "lan/discovery.go",
+      "analyzer": "goroutine",
+      "line_hash": "1e24607534f21295"
+    },
+    {
+      "file": "lan/discovery.go",
+      "analyzer": "shadow",
+      "line_hash": "67128ac1d9d8af8e"
+    },
+    {
+      "file": "lan/discovery.go",
+      "analyzer": "shadow",
+      "line_hash": "e3ef1c8bbfa8be04"
+    },
+    {
+      "file": "lan/identity.go",
+      "analyzer": "banany",
+      "line_hash": "8f442d51d877b3a1"
+    },
+    {
+      "file": "lan/identity.go",
+      "analyzer": "banany",
+      "line_hash": "d1eec3d1fe3e3d1f"
+    },
+    {
+      "file": "lan/identity.go",
+      "analyzer": "shadow",
+      "line_hash": "487de28cfbbd3127"
+    },
+    {
+      "file": "lan/identity.go",
+      "analyzer": "shadow",
+      "line_hash": "8b79106c85e16e1d"
+    },
+    {
+      "file": "lan/identity.go",
+      "analyzer": "shadow",
+      "line_hash": "f12eb3418956ed25"
+    },
+    {
+      "file": "lan/identity.go",
+      "analyzer": "shadow",
+      "line_hash": "f5c7fe08c75b697a"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "errcheck",
+      "line_hash": "5f4bd9fedc46cd37"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "errcheck",
+      "line_hash": "8a79743972791d53"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "namedargs",
+      "line_hash": "5f4bd9fedc46cd37"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "namedargs",
+      "line_hash": "5f4bd9fedc46cd37"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "namedargs",
+      "line_hash": "8a79743972791d53"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "namedargs",
+      "line_hash": "8a79743972791d53"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "namedargs",
+      "line_hash": "d9dd328b82da1394"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "namedargs",
+      "line_hash": "d9dd328b82da1394"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "shadow",
+      "line_hash": "8566f4989e2cfe3f"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "shadow",
+      "line_hash": "a866a54e5c5a1df4"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "shadow",
+      "line_hash": "ac5d916d742df52e"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "shadow",
+      "line_hash": "cb6a6adf8f9179af"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "shadow",
+      "line_hash": "d9dd328b82da1394"
+    },
+    {
+      "file": "lan/lan.go",
+      "analyzer": "shadow",
+      "line_hash": "dee9234482e724b8"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "errcheck",
+      "line_hash": "12e3c3299d9dd0db"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "errcheck",
+      "line_hash": "228ff211a75d27ef"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "errcheck",
+      "line_hash": "36ae5fb30900714b"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "158c1aab23c7eaac"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "158c1aab23c7eaac"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "17b9d8a4bb39589b"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "17b9d8a4bb39589b"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "25a7e9d1168c1030"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "25a7e9d1168c1030"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "2d265441c6a44ea8"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "2d265441c6a44ea8"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "554ef2805d8931b5"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "554ef2805d8931b5"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "5d186b24c055507a"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "5d186b24c055507a"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "6158ac9a6c6bd4e9"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "6158ac9a6c6bd4e9"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "72af3dc46248b4c3"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "72af3dc46248b4c3"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "864bac543c12793b"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "864bac543c12793b"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "94be89c6a7fb934f"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "94be89c6a7fb934f"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "9f190769bae99d39"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "9f190769bae99d39"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "d0e3109dc8398bed"
+    },
+    {
+      "file": "metrics.go",
+      "analyzer": "namedargs",
+      "line_hash": "d0e3109dc8398bed"
+    },
+    {
+      "file": "migrate.go",
+      "analyzer": "shadow",
+      "line_hash": "22e0723af1fd2aa3"
+    },
+    {
+      "file": "migrate.go",
+      "analyzer": "shadow",
+      "line_hash": "8b5a6902c79e8fab"
+    },
+    {
+      "file": "migrate.go",
+      "analyzer": "shadow",
+      "line_hash": "a6cdd13cd3fee930"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "111274c5a869e2f1"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "7a9c0b94c55189af"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "7a9c0b94c55189af"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "7a9c0b94c55189af"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "7a9c0b94c55189af"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "7a9c0b94c55189af"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "7e98f1af77e3d840"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "c045e7c10645cafc"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "c7f578aeae834df5"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "c7f578aeae834df5"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "c7f578aeae834df5"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "c7f578aeae834df5"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "c7f578aeae834df5"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "errcheck",
+      "line_hash": "c7f578aeae834df5"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "goroutine",
+      "line_hash": "608ac3c3d44756f5"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "namedargs",
+      "line_hash": "964754f74ac0c5f8"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "namedargs",
+      "line_hash": "964754f74ac0c5f8"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "noglobals",
+      "line_hash": "09dc519ab94484f0"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "031891e50bf7bd80"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "28678a90ce6fc3d3"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "2e5eb0f7a33fd68b"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "3c6d5ee474ad1985"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "4a5374eac610be74"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "4a9ce66408f5b997"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "52c7b7146fc3bdb2"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "64ad42eee805d4b7"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "64c9cbf363a26673"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "68c53f0e07bbbcd9"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "6e68c92a9d4a4c80"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "b52dc00ad5498922"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "cce328737a11d968"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "d87cceb04aac29ce"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "dabb049c59e7921b"
+    },
+    {
+      "file": "node.go",
+      "analyzer": "shadow",
+      "line_hash": "ff991a36a7be6a1f"
+    },
+    {
+      "file": "rpc_pool.go",
+      "analyzer": "errcheck",
+      "line_hash": "5807bf48300d37ff"
+    },
+    {
+      "file": "rpc_pool.go",
+      "analyzer": "errcheck",
+      "line_hash": "5807bf48300d37ff"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "banany",
+      "line_hash": "5db068feca00c859"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "banany",
+      "line_hash": "d041d587cc84fd85"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "06279958ecf80cda"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "06279958ecf80cda"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "06279958ecf80cda"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "08301a30899c550a"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "0efdc9fb9ebf88f8"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "4322ec3a2e498eee"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "779a62c1891cdb70"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "85e4cdc80a07813e"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "85e4cdc80a07813e"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "85e4cdc80a07813e"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "8e70fb35cabac6c8"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "8e70fb35cabac6c8"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "8e70fb35cabac6c8"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "8e70fb35cabac6c8"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "8e70fb35cabac6c8"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "8e70fb35cabac6c8"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "8f6b7ee1fafb4be4"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "8f6b7ee1fafb4be4"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "922c044d5fa99c23"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "922c044d5fa99c23"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "9c888a41acd2debf"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "9c888a41acd2debf"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "a2615066f648a4ef"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "c30e5362e569893c"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "f2e9c98445a03ebd"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errcheck",
+      "line_hash": "f2e9c98445a03ebd"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errorlint",
+      "line_hash": "0147c2cf15ba7c98"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errorlint",
+      "line_hash": "0584ca75f674cf03"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "errorlint",
+      "line_hash": "e1b9da475d9f5405"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "namedargs",
+      "line_hash": "65d28f16f437744f"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "namedargs",
+      "line_hash": "65d28f16f437744f"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "noglobals",
+      "line_hash": "19492c337920b886"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "noglobals",
+      "line_hash": "62bbe8cc602d8d7c"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "shadow",
+      "line_hash": "126dad531c8cba93"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "shadow",
+      "line_hash": "29fe8beb8fb92c56"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "shadow",
+      "line_hash": "2f1fe88395cbdf64"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "shadow",
+      "line_hash": "2f9855e644ba60e9"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "shadow",
+      "line_hash": "2f9855e644ba60e9"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "shadow",
+      "line_hash": "53fa0c48e5491d29"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "shadow",
+      "line_hash": "551dd5e4f7d11015"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "shadow",
+      "line_hash": "65b8f30a68814db9"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "shadow",
+      "line_hash": "9f157a5149028232"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "shadow",
+      "line_hash": "a2361e766869dcc1"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "shadow",
+      "line_hash": "f58d4fd1331a4ae8"
+    },
+    {
+      "file": "store.go",
+      "analyzer": "shadow",
+      "line_hash": "fcfc1f083944da0f"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "banany",
+      "line_hash": "2e4d006747907f6b"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "banany",
+      "line_hash": "a029a9e2b34b66af"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "02415aa352300e78"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "02415aa352300e78"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "02415aa352300e78"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "02415aa352300e78"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "02415aa352300e78"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "78759ec25a5ebe93"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "954a466090c29fe7"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "b673b6a2dea84487"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "b673b6a2dea84487"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "b673b6a2dea84487"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "b673b6a2dea84487"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "f1ee75ab4e1d27a7"
+    },
+    {
+      "file": "tagged_value.go",
+      "analyzer": "errcheck",
+      "line_hash": "f244cdd08267814d"
+    },
+    {
+      "file": "validate.go",
+      "analyzer": "noglobals",
+      "line_hash": "4eb28d524dd461df"
+    },
+    {
+      "file": "validate.go",
+      "analyzer": "noglobals",
+      "line_hash": "4f61ec379ea1cdf0"
+    },
+    {
+      "file": "validate.go",
+      "analyzer": "noglobals",
+      "line_hash": "5308db9e0cb761a5"
+    },
+    {
+      "file": "validate.go",
+      "analyzer": "noglobals",
+      "line_hash": "93fa63b2b79e7d13"
+    },
+    {
+      "file": "validate.go",
+      "analyzer": "noglobals",
+      "line_hash": "fb392ff77dfb7ccd"
+    }
+  ]
+}

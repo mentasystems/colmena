@@ -188,6 +188,9 @@ func (d *discovery) browseLoop(ctx context.Context) {
 }
 
 func (d *discovery) collect(entries <-chan *zeroconf.ServiceEntry) {
+	d.announceMu.Lock()
+	selfID := d.nodeID
+	d.announceMu.Unlock()
 	for e := range entries {
 		p, ok := parseEntry(e)
 		if !ok {
@@ -200,7 +203,7 @@ func (d *discovery) collect(entries <-chan *zeroconf.ServiceEntry) {
 		if pCluster := txtValue(e.Text, "cluster"); pCluster != expected {
 			continue
 		}
-		if p.NodeID == d.nodeID {
+		if p.NodeID == selfID {
 			continue // skip our own announcement
 		}
 		d.mu.Lock()

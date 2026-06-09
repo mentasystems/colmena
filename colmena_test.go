@@ -1479,7 +1479,7 @@ func TestFollower_ForwardQuery(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Use the internal forwardQuery to test the RPC query path directly.
-	resp, err := follower.forwardQuery("default", "SELECT val FROM fwd_q_test WHERE id = 1", nil)
+	resp, err := follower.forwardQuery("default", "SELECT val FROM fwd_q_test WHERE id = 1", nil, ConsistencyWeak)
 	if err != nil {
 		t.Fatalf("forward query: %v", err)
 	}
@@ -2410,7 +2410,7 @@ func TestFollower_WeakQueryWithArgs(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// forwardQuery with args.
-	resp, err := follower.forwardQuery("default", "SELECT val FROM weak_args WHERE id = ?", []any{1})
+	resp, err := follower.forwardQuery("default", "SELECT val FROM weak_args WHERE id = ?", []any{1}, ConsistencyWeak)
 	if err != nil {
 		t.Fatalf("forward query with args: %v", err)
 	}
