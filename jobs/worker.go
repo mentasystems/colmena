@@ -38,7 +38,10 @@ func (m *Manager) workerLoop(_ int) {
 			next = 0
 		}
 		if !timer.Stop() {
-			select { case <-timer.C: default: }
+			select {
+			case <-timer.C:
+			default:
+			}
 		}
 		timer.Reset(next)
 	}

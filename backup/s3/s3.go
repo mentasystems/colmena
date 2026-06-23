@@ -86,7 +86,7 @@ func NewBackend(cfg Config) (*Backend, error) {
 	endpoint := fmt.Sprintf("%s://%s", scheme, cfg.Endpoint)
 
 	client := s3.New(s3.Options{
-		Region: cfg.Region,
+		Region:       cfg.Region,
 		BaseEndpoint: &endpoint,
 		Credentials: credentials.NewStaticCredentialsProvider(
 			cfg.AccessKey, cfg.SecretKey, "",

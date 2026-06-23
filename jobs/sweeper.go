@@ -54,4 +54,3 @@ func (m *Manager) sweepOnce() {
 		log.Printf("colmena/jobs: reclaimed %d orphaned job(s)", rows)
 	}
 }
-

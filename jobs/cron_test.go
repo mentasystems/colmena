@@ -8,16 +8,16 @@ import (
 func TestParseCron_Errors(t *testing.T) {
 	cases := []string{
 		"",
-		"* * * *",          // 4 fields
-		"* * * * * *",      // 6 fields
-		"60 * * * *",       // minute out of range
-		"* 24 * * *",       // hour out of range
-		"* * 32 * *",       // dom out of range
-		"* * * 13 *",       // month out of range
-		"* * * * 7",        // dow out of range
-		"a * * * *",        // bad number
-		"5-3 * * * *",      // inverted range
-		"*/0 * * * *",      // bad step
+		"* * * *",     // 4 fields
+		"* * * * * *", // 6 fields
+		"60 * * * *",  // minute out of range
+		"* 24 * * *",  // hour out of range
+		"* * 32 * *",  // dom out of range
+		"* * * 13 *",  // month out of range
+		"* * * * 7",   // dow out of range
+		"a * * * *",   // bad number
+		"5-3 * * * *", // inverted range
+		"*/0 * * * *", // bad step
 	}
 	for _, expr := range cases {
 		if _, err := parseCron(expr); err == nil {

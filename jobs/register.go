@@ -18,8 +18,8 @@ type handlerEntry struct {
 }
 
 type handlerRegistry struct {
-	mu       sync.RWMutex
-	entries  map[string]*handlerEntry
+	mu      sync.RWMutex
+	entries map[string]*handlerEntry
 }
 
 func newHandlerRegistry() *handlerRegistry {

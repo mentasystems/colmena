@@ -22,12 +22,12 @@ type cronSchedule struct {
 // parseCron parses a "minute hour day-of-month month day-of-week" expression.
 // Supported syntax:
 //
-//	*           any value
-//	N           literal N
-//	N-M         range (inclusive)
-//	*/S         step from start of range
-//	N-M/S       step from N to M
-//	N,M,...     comma-separated list of any of the above
+//   - any value
+//     N           literal N
+//     N-M         range (inclusive)
+//     */S         step from start of range
+//     N-M/S       step from N to M
+//     N,M,...     comma-separated list of any of the above
 //
 // Unlike Vixie cron we don't support textual month/weekday names because the
 // cron expressions live in the database and avoiding aliases keeps the

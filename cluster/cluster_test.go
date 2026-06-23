@@ -149,10 +149,10 @@ type fakeDiscovery struct {
 	peers func() []Peer
 }
 
-func (f *fakeDiscovery) Start(ctx context.Context, self Peer) error { return nil }
-func (f *fakeDiscovery) Peers() []Peer                              { return f.peers() }
+func (f *fakeDiscovery) Start(ctx context.Context, self Peer) error  { return nil }
+func (f *fakeDiscovery) Peers() []Peer                               { return f.peers() }
 func (f *fakeDiscovery) UpdateFlags(bootstrapping, voter bool) error { return nil }
-func (f *fakeDiscovery) Close() error                               { return nil }
+func (f *fakeDiscovery) Close() error                                { return nil }
 
 func TestWaitForFormedClusterReturnsOnFormed(t *testing.T) {
 	var formed atomic.Bool

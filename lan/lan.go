@@ -26,11 +26,11 @@ type Cluster struct {
 
 	disc *discovery
 
-	stop     chan struct{}
-	done     chan struct{}
-	closeMu  sync.Mutex
-	closed   bool
-	isVoter  atomic.Bool
+	stop    chan struct{}
+	done    chan struct{}
+	closeMu sync.Mutex
+	closed  bool
+	isVoter atomic.Bool
 }
 
 // Start brings up a Colmena node with LAN-based zero-config clustering.

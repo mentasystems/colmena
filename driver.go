@@ -132,7 +132,7 @@ func (c *colmenaConn) localQuery(query string, args []any) (driver.Rows, error) 
 
 // any-ok: driver args are heterogeneous by contract (database/sql driver.Value)
 func (c *colmenaConn) leaderQuery(query string, args []any, consistency ConsistencyLevel) (driver.Rows, error) {
-	resp, err := c.node.forwardQuery(/* dbName */ c.dbName, /* sqlStr */ query, args, consistency)
+	resp, err := c.node.forwardQuery( /* dbName */ c.dbName /* sqlStr */, query, args, consistency)
 	if err != nil {
 		return nil, err
 	}
@@ -320,7 +320,7 @@ func (r *wrappedRows) Next(dest []driver.Value) error {
 
 type rpcRows struct {
 	columns []string
-	tagged  [][]TaggedValue   // v0.6.1+ type-preserving payload (preferred)
+	tagged  [][]TaggedValue     // v0.6.1+ type-preserving payload (preferred)
 	legacy  [][]json.RawMessage // v0.6.0 peer fallback
 	pos     int
 }

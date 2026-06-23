@@ -79,13 +79,13 @@ func tryStartCluster(t *testing.T, n int) ([]*colmena.Node, bool) {
 func attachManager(t *testing.T, node *colmena.Node, configure func(*Config)) *Manager {
 	t.Helper()
 	cfg := Config{
-		Workers:        2,
-		PollInterval:   50 * time.Millisecond,
-		DefaultTimeout: 2 * time.Second,
-		SweepInterval:  100 * time.Millisecond,
-		ScheduleInterval: 100 * time.Millisecond,
+		Workers:            2,
+		PollInterval:       50 * time.Millisecond,
+		DefaultTimeout:     2 * time.Second,
+		SweepInterval:      100 * time.Millisecond,
+		ScheduleInterval:   100 * time.Millisecond,
 		DefaultMaxAttempts: 3,
-		DefaultBackoff: Backoff{Base: 20 * time.Millisecond, Max: 200 * time.Millisecond},
+		DefaultBackoff:     Backoff{Base: 20 * time.Millisecond, Max: 200 * time.Millisecond},
 	}
 	if configure != nil {
 		configure(&cfg)

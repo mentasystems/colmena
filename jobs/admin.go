@@ -61,16 +61,16 @@ func AdminHandler(m *Manager) http.Handler {
 func stripPrefix(_ *http.ServeMux) string { return "" }
 
 type adminJob struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	Status     string `json:"status"`
-	Priority   int    `json:"priority"`
-	Attempts   int    `json:"attempts"`
-	MaxAttempts int   `json:"max_attempts"`
-	EnqueuedAt int64  `json:"enqueued_at"`
-	RunAt      int64  `json:"run_at"`
-	ClaimedBy  string `json:"claimed_by"`
-	LastError  string `json:"last_error"`
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Status      string `json:"status"`
+	Priority    int    `json:"priority"`
+	Attempts    int    `json:"attempts"`
+	MaxAttempts int    `json:"max_attempts"`
+	EnqueuedAt  int64  `json:"enqueued_at"`
+	RunAt       int64  `json:"run_at"`
+	ClaimedBy   string `json:"claimed_by"`
+	LastError   string `json:"last_error"`
 }
 
 func listJobs(m *Manager, status string, limit int) ([]adminJob, error) {

@@ -28,11 +28,11 @@ type Manager struct {
 	wg       sync.WaitGroup
 
 	// Stats counters, updated locally on this node.
-	executed atomic.Uint64
+	executed  atomic.Uint64
 	succeeded atomic.Uint64
-	failed   atomic.Uint64
-	retried  atomic.Uint64
-	dead     atomic.Uint64
+	failed    atomic.Uint64
+	retried   atomic.Uint64
+	dead      atomic.Uint64
 }
 
 // New starts a jobs manager bound to the given node. Schema is applied

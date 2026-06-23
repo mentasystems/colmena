@@ -83,4 +83,3 @@ func decodeEnvelope(b []byte) (FormatKind, uint8, []byte, error) {
 	}
 	return FormatKind(b[8]), b[9], b[envelopeHeaderSize:], nil
 }
-
