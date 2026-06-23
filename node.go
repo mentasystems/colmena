@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/rpc"
@@ -35,10 +36,11 @@ var ErrNotLeader = errors.New("colmena: not the leader")
 
 // Node is a single member of a Colmena distributed SQLite cluster.
 type Node struct {
-	config Config
-	stores *storeManager
-	raft   *raft.Raft
-	fsm    *fsm
+	config   Config
+	stores   *storeManager
+	raft     *raft.Raft
+	fsm      *fsm
+	logStore *raftboltdb.BoltStore // Raft log+stable store; closed in Close to release the BoltDB lock
 
 	rpcServer   *rpc.Server
 	rpcListener net.Listener
@@ -47,16 +49,16 @@ type Node struct {
 	rpcConnsMu  sync.Mutex
 	rpcWG       sync.WaitGroup // in-flight RPC handlers (drained in Close)
 
-	batcher  *WriteBatcher
-	lease    *readLease
+	batcher   *WriteBatcher
+	lease     *readLease
 	leaseStop chan struct{}
-	metrics  metricsCounters
-	backup   *backupManager
-	handlers handlerRegistry
-	dbs      map[string]*sql.DB
-	dbsMu    sync.Mutex
-	closed   bool
-	closedMu sync.Mutex
+	metrics   metricsCounters
+	backup    *backupManager
+	handlers  handlerRegistry
+	dbs       map[string]*sql.DB
+	dbsMu     sync.Mutex
+	closed    bool
+	closedMu  sync.Mutex
 }
 
 // New creates and starts a new Colmena node.
@@ -131,14 +133,15 @@ func New(cfg Config) (*Node, error) {
 	}
 
 	node := &Node{
-		config:     cfg,
-		stores:     sm,
-		raft:       r,
-		fsm:        f,
-		rpcPool:    newRPCPool(cfg.TLSConfig, cfg.NodeID),
-		rpcConns:   make(map[net.Conn]struct{}),
-		handlers:   handlerRegistry{handlers: make(map[string]func([]byte) ([]byte, error))},
-		dbs:        make(map[string]*sql.DB),
+		config:   cfg,
+		stores:   sm,
+		raft:     r,
+		fsm:      f,
+		logStore: logStore,
+		rpcPool:  newRPCPool(cfg.TLSConfig, cfg.NodeID),
+		rpcConns: make(map[net.Conn]struct{}),
+		handlers: handlerRegistry{handlers: make(map[string]func([]byte) ([]byte, error))},
+		dbs:      make(map[string]*sql.DB),
 	}
 
 	if cfg.Bootstrap {
@@ -193,6 +196,41 @@ func New(cfg Config) (*Node, error) {
 	return node, nil
 }
 
+// HasExistingState reports whether dataDir already holds persisted Raft state
+// from a previously-formed cluster — a non-empty log, a recorded current term,
+// or a snapshot. It lets a clustering layer tell a true first-ever cold start
+// (no state: safe to bootstrap a fresh single-server cluster) apart from a
+// restart of an existing member (state present: must bring Raft up on the
+// persisted configuration and re-elect among its peers, never bootstrap).
+//
+// It opens and immediately closes the on-disk stores, taking BoltDB's exclusive
+// file lock for the duration, so it must be called before New (or after Close)
+// for the same dataDir, never concurrently with a live Node. A dataDir with no
+// raft.db yet reports false without creating one.
+func HasExistingState(dataDir string) (bool, error) {
+	raftDBPath := filepath.Join(dataDir, "raft.db")
+	if _, err := os.Stat(raftDBPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("colmena: stat raft state: %w", err)
+	}
+	logStore, err := raftboltdb.New(raftboltdb.Options{Path: raftDBPath})
+	if err != nil {
+		return false, fmt.Errorf("colmena: open log store: %w", err)
+	}
+	defer logStore.Close()
+	snapshotStore, err := raft.NewFileSnapshotStore(dataDir, 2, io.Discard)
+	if err != nil {
+		return false, fmt.Errorf("colmena: open snapshot store: %w", err)
+	}
+	has, err := raft.HasExistingState(logStore, logStore, snapshotStore)
+	if err != nil {
+		return false, fmt.Errorf("colmena: inspect raft state: %w", err)
+	}
+	return has, nil
+}
+
 // DB returns a *sql.DB for the "default" database with the node's default consistency.
 func (n *Node) DB() *sql.DB {
 	return n.OpenDB("default", n.config.Consistency)
@@ -225,22 +263,35 @@ func (n *Node) Stats() map[string]string { return n.raft.Stats() }
 // Close shuts down the node gracefully. Safe to call multiple times.
 func (n *Node) Close() error {
 	n.closedMu.Lock()
-	if n.closed { n.closedMu.Unlock(); return nil }
+	if n.closed {
+		n.closedMu.Unlock()
+		return nil
+	}
 	n.closed = true
 	n.closedMu.Unlock()
 
 	var firstErr error
-	if n.leaseStop != nil { close(n.leaseStop) }
-	if n.batcher != nil { n.batcher.close() }
-	if n.backup != nil { n.backup.stop() }
+	if n.leaseStop != nil {
+		close(n.leaseStop)
+	}
+	if n.batcher != nil {
+		n.batcher.close()
+	}
+	if n.backup != nil {
+		n.backup.stop()
+	}
 
 	n.dbsMu.Lock()
 	for _, db := range n.dbs {
-		if err := db.Close(); err != nil && firstErr == nil { firstErr = err }
+		if err := db.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	n.dbsMu.Unlock()
 
-	if n.rpcListener != nil { n.rpcListener.Close() }
+	if n.rpcListener != nil {
+		n.rpcListener.Close()
+	}
 	// Force-close live RPC connections so idle ServeConn loops exit, then
 	// drain in-flight handlers before tearing down stores and raft — a
 	// handler past the listener close must not race st.query()/applyRaft
@@ -251,13 +302,28 @@ func (n *Node) Close() error {
 	}
 	n.rpcConnsMu.Unlock()
 	n.rpcWG.Wait()
-	if n.rpcPool != nil { n.rpcPool.close() }
+	if n.rpcPool != nil {
+		n.rpcPool.close()
+	}
 
 	if n.raft != nil {
-		if err := n.raft.Shutdown().Error(); err != nil && firstErr == nil { firstErr = err }
+		if err := n.raft.Shutdown().Error(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	// Close the BoltDB log store only after Raft has fully shut down (no more
+	// writes). raft.Shutdown does not close externally-provided stores, so
+	// without this the BoltDB file lock leaks until process exit — blocking any
+	// later reopen of the same data dir (e.g. HasExistingState after Close).
+	if n.logStore != nil {
+		if err := n.logStore.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	if n.stores != nil {
-		if err := n.stores.close(); err != nil && firstErr == nil { firstErr = err }
+		if err := n.stores.close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	return firstErr
 }
@@ -299,8 +365,12 @@ func (n *Node) applyRaft(data []byte) (*ApplyResult, error) {
 		return nil, fmt.Errorf("colmena: raft apply: %w", err)
 	}
 	resp, ok := future.Response().(*ApplyResult)
-	if !ok { return nil, fmt.Errorf("colmena: unexpected apply response type") }
-	if resp.Error != "" { return nil, errors.New(resp.Error) }
+	if !ok {
+		return nil, fmt.Errorf("colmena: unexpected apply response type")
+	}
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
 	return resp, nil
 }
 
@@ -308,10 +378,14 @@ func (n *Node) verifyLeader() error { return n.raft.VerifyLeader().Error() }
 
 func (n *Node) forwardExecute(data []byte) (*ApplyResult, error) {
 	leaderAddr, _ := n.raft.LeaderWithID()
-	if leaderAddr == "" { return nil, ErrNotLeader }
+	if leaderAddr == "" {
+		return nil, ErrNotLeader
+	}
 	addr := string(leaderAddr)
 	client, err := n.rpcPool.get(addr)
-	if err != nil { return nil, fmt.Errorf("colmena: connect to leader: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("colmena: connect to leader: %w", err)
+	}
 	n.metrics.rpcForwardsTotal.Add(1)
 	req := &RPCExecuteRequest{Command: data}
 	var resp RPCExecuteResponse
@@ -319,17 +393,23 @@ func (n *Node) forwardExecute(data []byte) (*ApplyResult, error) {
 		n.rpcPool.markFailed(addr)
 		return nil, fmt.Errorf("colmena: forward execute: %w", err)
 	}
-	if resp.Error != "" { return nil, errors.New(resp.Error) }
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
 	return &ApplyResult{Results: resp.Results}, nil
 }
 
 // any-ok: query args are heterogeneous by contract (database/sql driver.Value)
 func (n *Node) forwardQuery(dbName, sqlStr string, args []any, consistency ConsistencyLevel) (*RPCQueryResponse, error) {
 	leaderAddr, _ := n.raft.LeaderWithID()
-	if leaderAddr == "" { return nil, ErrNotLeader }
+	if leaderAddr == "" {
+		return nil, ErrNotLeader
+	}
 	addr := string(leaderAddr)
 	client, err := n.rpcPool.get(addr)
-	if err != nil { return nil, fmt.Errorf("colmena: connect to leader: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("colmena: connect to leader: %w", err)
+	}
 	n.metrics.rpcForwardsTotal.Add(1)
 	iArgs := make([]any, len(args))
 	copy(iArgs, args)
@@ -339,16 +419,22 @@ func (n *Node) forwardQuery(dbName, sqlStr string, args []any, consistency Consi
 		n.rpcPool.markFailed(addr)
 		return nil, fmt.Errorf("colmena: forward query: %w", err)
 	}
-	if resp.Error != "" { return nil, errors.New(resp.Error) }
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
 	return &resp, nil
 }
 
 func (n *Node) forwardHandler(name string, data []byte) ([]byte, error) {
 	leaderAddr, _ := n.raft.LeaderWithID()
-	if leaderAddr == "" { return nil, ErrNotLeader }
+	if leaderAddr == "" {
+		return nil, ErrNotLeader
+	}
 	addr := string(leaderAddr)
 	client, err := n.rpcPool.get(addr)
-	if err != nil { return nil, fmt.Errorf("colmena: connect to leader: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("colmena: connect to leader: %w", err)
+	}
 	n.metrics.rpcForwardsTotal.Add(1)
 	req := &RPCForwardRequest{Handler: name, Payload: data}
 	var resp RPCForwardResponse
@@ -356,7 +442,9 @@ func (n *Node) forwardHandler(name string, data []byte) ([]byte, error) {
 		n.rpcPool.markFailed(addr)
 		return nil, fmt.Errorf("colmena: forward handler: %w", err)
 	}
-	if resp.Error != "" { return nil, errors.New(resp.Error) }
+	if resp.Error != "" {
+		return nil, errors.New(resp.Error)
+	}
 	return resp.Payload, nil
 }
 
@@ -369,7 +457,9 @@ func (n *Node) WaitForLeader(timeout time.Duration) error {
 		case <-deadline:
 			return fmt.Errorf("colmena: timeout waiting for leader")
 		case <-ticker.C:
-			if addr, _ := n.raft.LeaderWithID(); addr != "" { return nil }
+			if addr, _ := n.raft.LeaderWithID(); addr != "" {
+				return nil
+			}
 		}
 	}
 }
@@ -378,13 +468,17 @@ func (n *Node) WaitForLeader(timeout time.Duration) error {
 func (n *Node) ExecMulti(stmts []Statement) ([]ExecResult, error) {
 	cmd := &Command{Type: CommandExecuteMulti, DB: "default", Statements: stmts}
 	result, err := n.execute(cmd)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	return result.Results, nil
 }
 
 func (n *Node) Nodes() ([]raft.Server, error) {
 	f := n.raft.GetConfiguration()
-	if err := f.Error(); err != nil { return nil, err }
+	if err := f.Error(); err != nil {
+		return nil, err
+	}
 	return f.Configuration().Servers, nil
 }
 
@@ -594,11 +688,20 @@ func (s *RPCService) Hello(req *RPCHelloRequest, resp *RPCHelloResponse) error {
 }
 
 func (s *RPCService) Execute(req *RPCExecuteRequest, resp *RPCExecuteResponse) error {
-	if !s.begin() { resp.Error = errNodeClosed.Error(); return nil }
+	if !s.begin() {
+		resp.Error = errNodeClosed.Error()
+		return nil
+	}
 	defer s.node.rpcWG.Done()
-	if s.node.raft.State() != raft.Leader { resp.Error = "not the leader"; return nil }
+	if s.node.raft.State() != raft.Leader {
+		resp.Error = "not the leader"
+		return nil
+	}
 	result, err := s.node.applyRaft(req.Command)
-	if err != nil { resp.Error = err.Error(); return nil }
+	if err != nil {
+		resp.Error = err.Error()
+		return nil
+	}
 	resp.Results = result.Results
 	return nil
 }
@@ -610,9 +713,15 @@ func (s *RPCService) Execute(req *RPCExecuteRequest, resp *RPCExecuteResponse) e
 // For Strong reads it re-verifies leadership against a quorum, preserving
 // linearizability end-to-end.
 func (s *RPCService) Query(req *RPCQueryRequest, resp *RPCQueryResponse) error {
-	if !s.begin() { resp.Error = errNodeClosed.Error(); return nil }
+	if !s.begin() {
+		resp.Error = errNodeClosed.Error()
+		return nil
+	}
 	defer s.node.rpcWG.Done()
-	if s.node.raft.State() != raft.Leader { resp.Error = "not the leader"; return nil }
+	if s.node.raft.State() != raft.Leader {
+		resp.Error = "not the leader"
+		return nil
+	}
 	if req.Consistency == ConsistencyStrong {
 		if err := s.node.verifyLeader(); err != nil {
 			resp.Error = fmt.Sprintf("leader verification failed: %v", err)
@@ -620,20 +729,36 @@ func (s *RPCService) Query(req *RPCQueryRequest, resp *RPCQueryResponse) error {
 		}
 	}
 	dbName := req.DB
-	if dbName == "" { dbName = "default" }
+	if dbName == "" {
+		dbName = "default"
+	}
 	st, err := s.node.stores.get(dbName)
-	if err != nil { resp.Error = err.Error(); return nil }
+	if err != nil {
+		resp.Error = err.Error()
+		return nil
+	}
 	rows, err := st.query(req.SQL, req.Args...)
-	if err != nil { resp.Error = err.Error(); return nil }
+	if err != nil {
+		resp.Error = err.Error()
+		return nil
+	}
 	defer rows.Close()
 	cols, err := rows.Columns()
-	if err != nil { resp.Error = err.Error(); return nil }
+	if err != nil {
+		resp.Error = err.Error()
+		return nil
+	}
 	resp.Columns = cols
 	for rows.Next() {
 		values := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
-		for i := range values { ptrs[i] = &values[i] }
-		if err := rows.Scan(ptrs...); err != nil { resp.Error = err.Error(); return nil }
+		for i := range values {
+			ptrs[i] = &values[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			resp.Error = err.Error()
+			return nil
+		}
 		tagged := make([]TaggedValue, len(cols))
 		legacy := make([]json.RawMessage, len(cols))
 		for i, v := range values {
@@ -644,22 +769,36 @@ func (s *RPCService) Query(req *RPCQueryRequest, resp *RPCQueryResponse) error {
 		resp.TaggedRows = append(resp.TaggedRows, tagged)
 		resp.Rows = append(resp.Rows, legacy)
 	}
-	if err := rows.Err(); err != nil { resp.Error = err.Error() }
+	if err := rows.Err(); err != nil {
+		resp.Error = err.Error()
+	}
 	return nil
 }
 
 func (s *RPCService) Forward(req *RPCForwardRequest, resp *RPCForwardResponse) error {
-	if !s.begin() { resp.Error = errNodeClosed.Error(); return nil }
+	if !s.begin() {
+		resp.Error = errNodeClosed.Error()
+		return nil
+	}
 	defer s.node.rpcWG.Done()
-	if s.node.raft.State() != raft.Leader { resp.Error = "not the leader"; return nil }
+	if s.node.raft.State() != raft.Leader {
+		resp.Error = "not the leader"
+		return nil
+	}
 	data, err := s.node.handlers.call(req.Handler, req.Payload)
-	if err != nil { resp.Error = err.Error(); return nil }
+	if err != nil {
+		resp.Error = err.Error()
+		return nil
+	}
 	resp.Payload = data
 	return nil
 }
 
 func (s *RPCService) Join(req *RPCJoinRequest, resp *RPCJoinResponse) error {
-	if !s.begin() { resp.Error = errNodeClosed.Error(); return nil }
+	if !s.begin() {
+		resp.Error = errNodeClosed.Error()
+		return nil
+	}
 	defer s.node.rpcWG.Done()
 	if s.node.raft.State() != raft.Leader {
 		leaderAddr, _ := s.node.raft.LeaderWithID()
@@ -695,14 +834,19 @@ func (s *RPCService) Join(req *RPCJoinRequest, resp *RPCJoinResponse) error {
 	} else {
 		f = s.node.raft.AddVoter(id, addr, 0, timeout)
 	}
-	if err := f.Error(); err != nil { resp.Error = err.Error() }
+	if err := f.Error(); err != nil {
+		resp.Error = err.Error()
+	}
 	return nil
 }
 
 func (n *Node) join() error {
 	for _, addr := range n.config.Join {
 		client, err := n.rpcPool.get(addr)
-		if err != nil { log.Printf("colmena: failed to connect to %s: %v", addr, err); continue }
+		if err != nil {
+			log.Printf("colmena: failed to connect to %s: %v", addr, err)
+			continue
+		}
 		req := &RPCJoinRequest{
 			NodeID:     n.config.NodeID,
 			Address:    n.config.Advertise,
@@ -718,10 +862,13 @@ func (n *Node) join() error {
 			if resp.LeaderAddr != "" {
 				if c2, err := n.rpcPool.get(resp.LeaderAddr); err == nil {
 					var r2 RPCJoinResponse
-					if err := c2.Call("Colmena.Join", req, &r2); err == nil && r2.Error == "" { return nil }
+					if err := c2.Call("Colmena.Join", req, &r2); err == nil && r2.Error == "" {
+						return nil
+					}
 				}
 			}
-			log.Printf("colmena: join via %s: %s", addr, resp.Error); continue
+			log.Printf("colmena: join via %s: %s", addr, resp.Error)
+			continue
 		}
 		return nil
 	}
@@ -730,7 +877,9 @@ func (n *Node) join() error {
 
 func (n *Node) startRPC() error {
 	rpcAddr, err := rpcAddrFrom(n.config.Bind)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	n.rpcServer = rpc.NewServer()
 	if err := n.rpcServer.RegisterName("Colmena", &RPCService{node: n}); err != nil {
 		return fmt.Errorf("colmena: register RPC: %w", err)
@@ -746,12 +895,16 @@ func (n *Node) startRPC() error {
 	} else {
 		ln, err = net.Listen("tcp", rpcAddr)
 	}
-	if err != nil { return fmt.Errorf("colmena: listen RPC on %s: %w", rpcAddr, err) }
+	if err != nil {
+		return fmt.Errorf("colmena: listen RPC on %s: %w", rpcAddr, err)
+	}
 	n.rpcListener = ln
 	go func() { // goroutine-ok: exits when Close() closes the listener
 		for {
 			conn, acceptErr := ln.Accept()
-			if acceptErr != nil { return }
+			if acceptErr != nil {
+				return
+			}
 			n.rpcConnsMu.Lock()
 			n.rpcConns[conn] = struct{}{}
 			n.rpcConnsMu.Unlock()
@@ -789,9 +942,13 @@ func (c *rpcIdleConn) Read(b []byte) (int, error) {
 
 func rpcAddrFrom(raftAddr string) (string, error) {
 	host, portStr, err := net.SplitHostPort(raftAddr)
-	if err != nil { return "", fmt.Errorf("colmena: parse addr %q: %w", raftAddr, err) }
+	if err != nil {
+		return "", fmt.Errorf("colmena: parse addr %q: %w", raftAddr, err)
+	}
 	port, err := strconv.Atoi(portStr)
-	if err != nil { return "", fmt.Errorf("colmena: parse port %q: %w", portStr, err) }
+	if err != nil {
+		return "", fmt.Errorf("colmena: parse port %q: %w", portStr, err)
+	}
 	return net.JoinHostPort(host, strconv.Itoa(port+1)), nil
 }
 

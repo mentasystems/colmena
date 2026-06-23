@@ -163,6 +163,35 @@ func freePortPair(t testing.TB) int {
 	return 0
 }
 
+// freeSpacedPortPairs returns n base ports such that each {p, p+1} raft/RPC pair
+// is disjoint from every other — adjacent bases would collide (one node's RPC
+// sidecar on p+1 is another node's raft port). Each base differs from the rest
+// by at least 2.
+func freeSpacedPortPairs(t testing.TB, n int) []int {
+	t.Helper()
+	abs := func(x int) int {
+		if x < 0 {
+			return -x
+		}
+		return x
+	}
+	var ports []int
+	for len(ports) < n {
+		p := freePortPair(t)
+		ok := true
+		for _, q := range ports {
+			if abs(p-q) < 2 {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			ports = append(ports, p)
+		}
+	}
+	return ports
+}
+
 func newColmenaNode(t *testing.T, id string, bootstrap bool, joinAddr string, asNonvoter bool) (*colmena.Node, string) {
 	t.Helper()
 	port := freePortPair(t)
@@ -260,6 +289,172 @@ func TestSweepDeadVoterAndPromote(t *testing.T) {
 	if !ok {
 		v, ids := countVoters(a)
 		t.Fatalf("failover did not restore quorum: voters=%d ids=%v", v, ids)
+	}
+}
+
+// TestHasExistingState verifies the recovery gate's discriminator: an empty
+// data dir reports no state (a true first cold start), while a dir that has held
+// a formed node reports state present (a returning member to be recovered, not
+// bootstrapped).
+func TestHasExistingState(t *testing.T) {
+	dir := t.TempDir()
+	if has, err := colmena.HasExistingState(dir); err != nil || has {
+		t.Fatalf("fresh dir: has=%v err=%v, want false/nil", has, err)
+	}
+
+	port := freePortPair(t)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	n, err := colmena.New(colmena.Config{
+		NodeID:           "s1",
+		DataDir:          dir,
+		Bind:             addr,
+		Advertise:        addr,
+		HeartbeatTimeout: 200 * time.Millisecond,
+		ElectionTimeout:  200 * time.Millisecond,
+		ApplyTimeout:     5 * time.Second,
+		LogOutput:        io.Discard,
+		Bootstrap:        true,
+	})
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	if err := n.WaitForLeader(5 * time.Second); err != nil {
+		t.Fatalf("wait leader: %v", err)
+	}
+	// Close so the BoltDB lock is released before HasExistingState reopens it.
+	if err := n.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	if has, err := colmena.HasExistingState(dir); err != nil || !has {
+		t.Fatalf("after forming state: has=%v err=%v, want true/nil", has, err)
+	}
+}
+
+// restartableNode is a colmena node bound to a fixed dataDir+addr so it can be
+// closed and brought back up on the same identity — what a Fly machine restart
+// in place looks like (FLY_MACHINE_ID and FLY_PRIVATE_IP are stable across a
+// restart, so NodeID and advertise address persist).
+func newColmenaNodeAt(t *testing.T, id, dataDir, addr string, bootstrap bool, joinAddr string) *colmena.Node {
+	t.Helper()
+	cfg := colmena.Config{
+		NodeID:           id,
+		DataDir:          dataDir,
+		Bind:             addr,
+		Advertise:        addr,
+		HeartbeatTimeout: 200 * time.Millisecond,
+		ElectionTimeout:  200 * time.Millisecond,
+		ApplyTimeout:     5 * time.Second,
+		LogOutput:        io.Discard,
+	}
+	if bootstrap {
+		cfg.Bootstrap = true
+	} else if joinAddr != "" {
+		cfg.Join = []string{joinAddr}
+	} else {
+		// No bootstrap, no join: recover from persisted state (the fly recovery
+		// path), bringing Raft up on the on-disk configuration.
+		cfg.Recover = true
+	}
+	n, err := colmena.New(cfg)
+	if err != nil {
+		t.Fatalf("new node %s: %v", id, err)
+	}
+	return n
+}
+
+// TestFullRestartReElects is the regression test for the cold-start quorum
+// deadlock (BUG.md): a 3-voter cluster whose every member is restarted at once,
+// with pre-existing multi-server Raft state and no leader reachable during
+// startup, must re-elect a leader on its own. It exercises the recovery
+// mechanism the fly layer now uses — bring Raft up on the persisted
+// configuration with neither Bootstrap nor Join — rather than gating on a leader
+// that cannot exist until a quorum is already listening.
+func TestFullRestartReElects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skips real-cluster lifecycle test in -short")
+	}
+	ports := freeSpacedPortPairs(t, 3)
+	dirs := [3]string{t.TempDir(), t.TempDir(), t.TempDir()}
+	ids := [3]string{"a", "b", "c"}
+	addr := func(i int) string { return fmt.Sprintf("127.0.0.1:%d", ports[i]) }
+
+	// Form a 3-voter cluster: a bootstraps, b and c join as voters.
+	a := newColmenaNodeAt(t, ids[0], dirs[0], addr(0), true, "")
+	if err := a.WaitForLeader(5 * time.Second); err != nil {
+		t.Fatalf("wait leader: %v", err)
+	}
+	b := newColmenaNodeAt(t, ids[1], dirs[1], addr(1), false, addr(0))
+	c := newColmenaNodeAt(t, ids[2], dirs[2], addr(2), false, addr(0))
+	if !waitFor(10*time.Second, func() bool {
+		v, idset := countVoters(a)
+		return v == 3 && len(idset) == 3
+	}) {
+		v, idset := countVoters(a)
+		t.Fatalf("cluster did not form 3 voters: voters=%d ids=%v", v, idset)
+	}
+
+	// Every node now has a 3-server configuration persisted. Each must report
+	// existing state (so the fly layer takes the recovery path on restart).
+	nodes := [3]*colmena.Node{a, b, c}
+	for i := range nodes {
+		if err := nodes[i].Close(); err != nil {
+			t.Fatalf("close %s: %v", ids[i], err)
+		}
+	}
+	for i := range dirs {
+		if has, err := colmena.HasExistingState(dirs[i]); err != nil || !has {
+			t.Fatalf("node %s: HasExistingState=%v err=%v, want true", ids[i], has, err)
+		}
+	}
+
+	// Full cold restart: every node comes back with NO bootstrap and NO join —
+	// exactly the recovery path. No leader exists at startup, yet they must
+	// re-elect among the persisted voters without external intervention.
+	var restarted [3]*colmena.Node
+	for i := range restarted {
+		restarted[i] = newColmenaNodeAt(t, ids[i], dirs[i], addr(i), false, "")
+	}
+	defer func() {
+		for _, n := range restarted {
+			if n != nil {
+				n.Close()
+			}
+		}
+	}()
+
+	leaderEmerged := waitFor(20*time.Second, func() bool {
+		for _, n := range restarted {
+			if n.IsLeader() {
+				return true
+			}
+		}
+		return false
+	})
+	if !leaderEmerged {
+		t.Fatal("no leader re-elected after full-cluster restart with persisted state")
+	}
+
+	// And exactly one leader, with all three back as voters — no split-brain.
+	leaders := 0
+	for _, n := range restarted {
+		if n.IsLeader() {
+			leaders++
+		}
+	}
+	if leaders != 1 {
+		t.Fatalf("want exactly 1 leader after recovery, got %d", leaders)
+	}
+	if !waitFor(10*time.Second, func() bool {
+		for _, n := range restarted {
+			if n.IsLeader() {
+				v, idset := countVoters(n)
+				return v == 3 && len(idset) == 3
+			}
+		}
+		return false
+	}) {
+		t.Fatal("recovered cluster did not settle at 3 voters")
 	}
 }
 

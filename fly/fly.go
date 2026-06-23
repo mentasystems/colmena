@@ -45,9 +45,12 @@ type Cluster struct {
 	isVoter atomic.Bool
 }
 
-// startPlan is the outcome of the cold-start decision: bootstrap a new cluster,
-// or join an existing one via joinAddrs as role.
+// startPlan is the outcome of the cold-start decision: recover an existing
+// member from persisted state, bootstrap a new cluster, or join an existing one
+// via joinAddrs as role. recover takes precedence and bypasses the cold-start
+// gate entirely (see Start).
 type startPlan struct {
+	recover   bool
 	bootstrap bool
 	joinAddrs []string
 	role      colmena.JoinRole
@@ -74,11 +77,33 @@ func Start(cfg Config) (*Cluster, error) {
 		return nil, err
 	}
 
-	plan, err := decideStart(ctx, cfg, self, disc, logger)
-	if err != nil {
-		cancel()
-		_ = disc.Close()
-		return nil, err
+	// A node that already holds persisted Raft state is a returning member of a
+	// formed cluster, not a fresh one — so skip the cold-start gate entirely and
+	// bring Raft up on the persisted configuration. Routing recovery through the
+	// gate is exactly the cold-start deadlock this guards against: the gate won't
+	// let an election loser bind its Raft listener until a leader exists, but on
+	// a full-cluster restart no leader can exist until a quorum of members are
+	// listening — circular, so the cluster never recovers. Real Raft members
+	// re-electing among themselves is the supported recovery path and is
+	// split-brain-safe by Raft's own quorum rule (a majority of the persisted
+	// voters must agree). The gate is only needed for the first-ever cold start
+	// (no state), where it prevents split-brain while force-installing a
+	// single-server configuration.
+	var plan startPlan
+	if hasState, stErr := colmena.HasExistingState(cfg.DataDir); stErr != nil {
+		logger.Printf("warning: could not inspect existing raft state: %v — treating as a fresh node", stErr)
+	} else if hasState {
+		plan.recover = true
+	}
+
+	if !plan.recover {
+		p, err := decideStart(ctx, cfg, self, disc, logger)
+		if err != nil {
+			cancel()
+			_ = disc.Close()
+			return nil, err
+		}
+		plan = p
 	}
 
 	colmenaCfg := colmena.Config{
@@ -94,10 +119,17 @@ func Start(cfg Config) (*Cluster, error) {
 		Backup:       cfg.Backup,
 		LogOutput:    cfg.LogOutput,
 	}
-	if plan.bootstrap {
+	switch {
+	case plan.recover:
+		// Recover brings Raft up on the persisted configuration (no Bootstrap,
+		// no Join) and joins the normal election among the members already
+		// recorded on disk.
+		colmenaCfg.Recover = true
+		logger.Printf("existing raft state found — recovering and electing among persisted voters")
+	case plan.bootstrap:
 		colmenaCfg.Bootstrap = true
 		logger.Printf("no formed cluster found — bootstrapping as voter")
-	} else {
+	default:
 		colmenaCfg.Join = plan.joinAddrs
 		colmenaCfg.JoinAs = plan.role
 		logger.Printf("joining existing cluster via %v as %s", plan.joinAddrs, cluster.RoleName(plan.role))
@@ -126,7 +158,10 @@ func Start(cfg Config) (*Cluster, error) {
 		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
 	}
-	c.isVoter.Store(plan.bootstrap || plan.role == colmena.JoinAsVoter)
+	// On recovery the suffrage comes from the persisted configuration, not the
+	// plan; assume voter (the common case) and let refreshVoterFlag reconcile a
+	// recovering non-voter on the first discovery tick.
+	c.isVoter.Store(plan.recover || plan.bootstrap || plan.role == colmena.JoinAsVoter)
 
 	go c.run(ctx, cancel)
 	return c, nil

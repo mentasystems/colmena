@@ -962,7 +962,9 @@ func TestConfig_ValidateErrors(t *testing.T) {
 		{"empty Bind", Config{NodeID: "n1", DataDir: "/tmp", Bootstrap: true}, "Bind"},
 		{"invalid Bind", Config{NodeID: "n1", DataDir: "/tmp", Bind: "invalid", Bootstrap: true}, "invalid Bind"},
 		{"both Bootstrap and Join", Config{NodeID: "n1", DataDir: "/tmp", Bind: "0.0.0.0:9000", Bootstrap: true, Join: []string{"a"}}, "mutually exclusive"},
-		{"neither Bootstrap nor Join", Config{NodeID: "n1", DataDir: "/tmp", Bind: "0.0.0.0:9000"}, "either Bootstrap or Join"},
+		{"neither Bootstrap nor Join nor Recover", Config{NodeID: "n1", DataDir: "/tmp", Bind: "0.0.0.0:9000"}, "either Bootstrap, Join, or Recover"},
+		{"Recover with Bootstrap", Config{NodeID: "n1", DataDir: "/tmp", Bind: "0.0.0.0:9000", Recover: true, Bootstrap: true}, "Recover cannot be combined"},
+		{"Recover with Join", Config{NodeID: "n1", DataDir: "/tmp", Bind: "0.0.0.0:9000", Recover: true, Join: []string{"a"}}, "Recover cannot be combined"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

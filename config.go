@@ -54,6 +54,16 @@ type Config struct {
 	// throughput. Ignored when Bootstrap is true.
 	JoinAs JoinRole
 
+	// Recover brings the node up on the Raft configuration already persisted in
+	// DataDir — joining the normal election among the recorded members — without
+	// bootstrapping a new cluster or explicitly joining one. Use it to restart an
+	// existing member whose on-disk state is intact (see HasExistingState). It is
+	// the recovery path that lets a full-cluster restart self-heal by re-electing
+	// among the persisted voters, instead of deadlocking on a leader that cannot
+	// exist until a quorum is already listening. Mutually exclusive with Bootstrap
+	// and Join.
+	Recover bool
+
 	// Consistency is the default read consistency level.
 	Consistency ConsistencyLevel
 
@@ -150,8 +160,11 @@ func (c *Config) validate() error {
 	if c.Bootstrap && len(c.Join) > 0 {
 		return fmt.Errorf("colmena: Bootstrap and Join are mutually exclusive")
 	}
-	if !c.Bootstrap && len(c.Join) == 0 {
-		return fmt.Errorf("colmena: either Bootstrap or Join must be set")
+	if c.Recover && (c.Bootstrap || len(c.Join) > 0) {
+		return fmt.Errorf("colmena: Recover cannot be combined with Bootstrap or Join")
+	}
+	if !c.Bootstrap && !c.Recover && len(c.Join) == 0 {
+		return fmt.Errorf("colmena: either Bootstrap, Join, or Recover must be set")
 	}
 	return nil
 }
