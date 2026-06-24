@@ -30,32 +30,55 @@ type Metrics struct {
 	// Health
 	LastContact time.Duration
 	Peers       int
+
+	// Format negotiation
+	// FormatSkew is true when this node is holding its write version below its
+	// local max because a voter cannot yet read the newer format (or the leader
+	// has not yet confirmed every voter's version) — i.e. the cluster is
+	// mid-format-migration.
+	FormatSkew bool
+	// EffectiveCommandVersion is the command-envelope version actually being
+	// written; below LocalCommandVersion during a format migration.
+	EffectiveCommandVersion int
+	// LocalCommandVersion is the newest command format this build supports.
+	LocalCommandVersion int
+	// FormatRejectsTotal counts log entries this node refused to apply because
+	// their envelope version was unknown (newer than this build). A non-zero,
+	// growing value means committed entries are NOT being applied here — state
+	// is diverging; treat it as a failed-readiness condition, not info.
+	FormatRejectsTotal uint64
 }
 
 // metricsCounters holds the atomic counters embedded in Node.
 type metricsCounters struct {
-	writesTotal      atomic.Uint64
-	readsTotal       atomic.Uint64
-	rpcForwardsTotal atomic.Uint64
+	writesTotal        atomic.Uint64
+	readsTotal         atomic.Uint64
+	rpcForwardsTotal   atomic.Uint64
+	formatRejectsTotal atomic.Uint64
 }
 
 // Metrics returns a snapshot of the node's current observability data.
 func (n *Node) Metrics() Metrics {
 	stats := n.raft.Stats()
+	fs := n.FormatStatus()
 
 	return Metrics{
-		RaftState:        stats["state"],
-		RaftTerm:         parseUint64(stats["term"]),
-		RaftLastIndex:    parseUint64(stats["last_log_index"]),
-		RaftCommitIndex:  parseUint64(stats["commit_index"]),
-		RaftAppliedIndex: parseUint64(stats["applied_index"]),
-		RaftFSMPending:   parseInt(stats["fsm_pending"]),
-		SnapshotIndex:    parseUint64(stats["last_snapshot_index"]),
-		WritesTotal:      n.metrics.writesTotal.Load(),
-		ReadsTotal:       n.metrics.readsTotal.Load(),
-		RPCForwardsTotal: n.metrics.rpcForwardsTotal.Load(),
-		LastContact:      parseDuration(stats["last_contact"]),
-		Peers:            countPeers(stats["latest_configuration"]),
+		RaftState:               stats["state"],
+		RaftTerm:                parseUint64(stats["term"]),
+		RaftLastIndex:           parseUint64(stats["last_log_index"]),
+		RaftCommitIndex:         parseUint64(stats["commit_index"]),
+		RaftAppliedIndex:        parseUint64(stats["applied_index"]),
+		RaftFSMPending:          parseInt(stats["fsm_pending"]),
+		SnapshotIndex:           parseUint64(stats["last_snapshot_index"]),
+		WritesTotal:             n.metrics.writesTotal.Load(),
+		ReadsTotal:              n.metrics.readsTotal.Load(),
+		RPCForwardsTotal:        n.metrics.rpcForwardsTotal.Load(),
+		LastContact:             parseDuration(stats["last_contact"]),
+		Peers:                   countPeers(stats["latest_configuration"]),
+		FormatSkew:              fs.Skew,
+		EffectiveCommandVersion: fs.EffectiveCommandVersion,
+		LocalCommandVersion:     fs.LocalCommandVersion,
+		FormatRejectsTotal:      n.metrics.formatRejectsTotal.Load(),
 	}
 }
 
@@ -80,6 +103,10 @@ func (n *Node) MetricsHandler() http.Handler {
 		writeCounter(&b, "colmena_rpc_forwards_total", "Total RPC-forwarded operations", m.RPCForwardsTotal)
 		writeGauge(&b, "colmena_last_contact_ms", "Milliseconds since last leader contact", m.LastContact.Milliseconds())
 		writeGauge(&b, "colmena_peers", "Number of peers in Raft configuration", m.Peers)
+		writeGauge(&b /* name */, "colmena_format_skew" /* help */, "1 when the cluster is mid-format-migration (write version held below local max)", boolToInt(m.FormatSkew))
+		writeGauge(&b /* name */, "colmena_command_format_effective" /* help */, "Command envelope version currently being written", m.EffectiveCommandVersion)
+		writeGauge(&b /* name */, "colmena_command_format_local" /* help */, "Newest command envelope version this build supports", m.LocalCommandVersion)
+		writeCounter(&b /* name */, "colmena_format_rejects_total" /* help */, "Committed log entries refused because their envelope version is unknown (state divergence)", m.FormatRejectsTotal)
 
 		fmt.Fprint(w, b.String())
 	})
@@ -124,6 +151,13 @@ func countPeers(config string) int {
 		return 0
 	}
 	return strings.Count(config, "Suffrage")
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func raftStateToInt(state string) int {

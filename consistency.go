@@ -23,6 +23,12 @@ const (
 	// may be stale if this node is a follower behind on replication or
 	// is partitioned from the cluster.
 	// Use for: dashboards, analytics, data where momentary staleness is OK.
+	//
+	// AVAILABILITY: stays available without a leader. The read is served from
+	// this node's local replica, so it keeps working during elections, quorum
+	// loss, and partitions (it may just return slightly stale data). Pick this
+	// (or ConsistencyLease) when a read must never fail during leadership
+	// changes — e.g. an auth/session lookup whose failure would log users out.
 	ConsistencyNone
 
 	// ConsistencyWeak reads from the leader. If this node is the leader,
@@ -32,6 +38,14 @@ const (
 	// timeout) where a just-deposed leader still believes it is the leader
 	// and serves a stale local read before stepping down.
 	// Use for: most applications — fresh data with minimal overhead.
+	//
+	// AVAILABILITY: this read returns an error (ErrNoLeader) when there is no
+	// reachable leader — during elections, quorum loss, or a partition — even
+	// though the data sits replicated in every node's local SQLite. Despite the
+	// name, "Weak" is LESS available than ConsistencyNone, not more: it trades
+	// availability for freshness. If reads must stay available during
+	// leadership changes, use ConsistencyNone or ConsistencyLease instead.
+	// Match the transient failure with errors.Is(err, ErrNoLeader).
 	ConsistencyWeak
 
 	// ConsistencyStrong provides linearizable reads. The leader contacts
@@ -41,6 +55,13 @@ const (
 	// stale data, even during leadership transitions.
 	// Use for: financial transactions, uniqueness checks, anything where
 	// reading stale data would cause incorrect behavior.
+	//
+	// AVAILABILITY: like ConsistencyWeak, this read returns an error
+	// (ErrNoLeader) when there is no reachable leader, and additionally fails
+	// if the leader cannot confirm its leadership against a quorum. It is the
+	// least available level by design — it refuses to answer rather than risk
+	// a stale read. Use ConsistencyNone or ConsistencyLease where availability
+	// matters more than linearizability.
 	ConsistencyStrong
 
 	// ConsistencyLease reads locally while the local read lease is valid,
@@ -58,6 +79,13 @@ const (
 	// Use for: read-heavy paths that want local-read speed and can tolerate
 	// up to a heartbeat of staleness; use Strong when correctness depends
 	// on reading the latest committed state.
+	//
+	// AVAILABILITY: stays available without a leader for as long as the local
+	// lease is valid (up to ~HeartbeatTimeout), serving from the local replica.
+	// Once the lease expires it falls back to leader forwarding and then
+	// behaves like ConsistencyWeak — returning ErrNoLeader if no leader is
+	// reachable. So it bridges a brief leaderless window but is not a permanent
+	// always-available read the way ConsistencyNone is.
 	ConsistencyLease
 )
 

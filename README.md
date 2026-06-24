@@ -102,37 +102,52 @@ All three nodes can serve reads. Writes from any node are automatically forwarde
 
 ## Read Consistency
 
-Colmena has three read consistency levels. The default is **Weak**.
+Colmena has four read consistency levels. The default is **Weak**.
 
-| Level | Where it reads | Guarantee | Latency |
-|---|---|---|---|
-| **None** | Local SQLite on this node | May be stale if node is behind on replication or partitioned | ~8µs |
-| **Weak** | Leader node (forwards if not leader) | Always reads from the node that processes writes. Tiny staleness window (~1s) during leadership transitions | ~90µs |
-| **Strong** | Leader node after quorum confirmation | Linearizable — impossible to get stale data, even during leader changes | ~100µs+ |
+| Level | Where it reads | Guarantee | Available without a leader? | Latency |
+|---|---|---|---|---|
+| **None** | Local SQLite on this node | May be stale if node is behind on replication or partitioned | **Yes** — served from the local replica | ~8µs |
+| **Lease** | Local SQLite while the lease is valid, else forwards to leader | Fresh within ~`HeartbeatTimeout`; heuristic, not linearizable | **Yes, within the lease window** (then behaves like Weak) | ~6µs |
+| **Weak** | Leader node (forwards if not leader) | Always reads from the node that processes writes. Tiny staleness window (~1s) during leadership transitions | **No** — returns `ErrNoLeader` during elections/quorum loss/partition | ~90µs |
+| **Strong** | Leader node after quorum confirmation | Linearizable — impossible to get stale data, even during leader changes | **No** — returns `ErrNoLeader` (and also if quorum can't confirm leadership) | ~100µs+ |
+
+> **Pick by availability first, then freshness.** Despite the name, **`Weak` is *less* available than `None`**, not more — it trades availability for freshness, so during a leader election or partition a `Weak`/`Strong` read fails with `ErrNoLeader` even though the data sits replicated in every node's local SQLite. If a read must never fail during leadership changes (e.g. an auth/session lookup whose failure would log a user out), use **`None`** or **`Lease`**. Distinguish the transient failure from a real error with `errors.Is(err, colmena.ErrNoLeader)` and map it to a retry or HTTP 503.
 
 How each level works on a **follower** node:
 
 - **None** → reads local SQLite directly (follower's copy, may lag behind leader)
+- **Lease** → reads local SQLite while the lease is valid, else forwards to the leader (then like Weak)
 - **Weak** → forwards the query to the leader via RPC, leader reads its local SQLite
 - **Strong** → forwards to leader, leader contacts quorum to confirm it's still leader, then reads
 
 How each level works on the **leader** node:
 
 - **None** → reads local SQLite directly
+- **Lease** → reads local SQLite directly (leader always holds a fresh lease)
 - **Weak** → reads local SQLite directly (it believes it's the leader)
 - **Strong** → confirms leadership with quorum first, then reads local SQLite
 
 ```go
-// Read from local SQLite, no network. Fast but may be stale on followers.
+// Read from local SQLite, no network. Fast and stays available without a
+// leader, but may be stale on followers.
 ctx := colmena.WithConsistency(ctx, colmena.ConsistencyNone)
 
+// Local-read speed, bounded staleness, stays available within the lease window.
+ctx := colmena.WithConsistency(ctx, colmena.ConsistencyLease)
+
 // Read from the leader. Fresh data, minimal overhead. (default)
+// Returns ErrNoLeader when there is no reachable leader.
 ctx := colmena.WithConsistency(ctx, colmena.ConsistencyWeak)
 
 // Linearizable read. Leader verifies with quorum before responding.
 ctx := colmena.WithConsistency(ctx, colmena.ConsistencyStrong)
 
 rows, err := db.QueryRowContext(ctx, "SELECT ...")
+
+// Treat a leaderless window as transient, not a hard failure:
+if errors.Is(err, colmena.ErrNoLeader) {
+    // retry, or return HTTP 503 — the data is intact, just leader-unavailable
+}
 ```
 
 ## Write Batching

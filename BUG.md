@@ -1,191 +1,150 @@
-# BUG: cold-start quorum deadlock — a full-cluster restart never re-elects a leader
+# Colmena — improvements to make two real footguns catchable first-time
 
-Filed against the `fly` clustering package (`github.com/mentasystems/colmena/fly`).
-Reproduced in production on the `mediavida-api` app (3-node Fly cluster,
-`VoterQuorum = 3`) on 2026-06-22 → 2026-06-23: a routine Fly host restart that
-bounced all 3 machines at once took the cluster permanently down (~16.5h) until a
-manual, data-preserving wipe of the Raft state. The app's HTTP service never
-became healthy again on its own.
+Context: these two issues bit a downstream project (`mediavida-api`, a 3-node
+Raft cluster on Fly.io) and were hard to detect — they only surface under leader
+elections / quorum churn / version skew, and the library *already half-detects
+both but neither prevents them nor surfaces them loudly*. Each section below is
+self-contained and actionable. Tackle them in priority order; they're independent.
 
-## Symptom
+Repo: `github.com/mentasystems/colmena` (this working copy: `/Users/jairo/colmena`).
+Current `CommandFormatVersion = 2` (`version.go:22`).
 
-When **all** voters of a formed cluster go down at roughly the same time (Fly host
-maintenance, a platform-wide restart, a simultaneous OOM, etc.) and then come back,
-the cluster **cannot re-elect a leader** and never recovers:
+---
 
-- One node ends up stuck as a perpetual Raft candidate (term climbs without bound,
-  e.g. `term=868`), logging `Election timeout reached, restarting election` and
-  `failed to make requestVote RPC: ... connect: connection refused` against the
-  other voters forever.
-- The other voters crash-loop: each boots, fails to find/elect a leader within the
-  bootstrap window, `log.Fatal`s out of the consumer's `Start` error path, reboots,
-  hits Fly's **"machine has reached its max restart count of 10"**, and is parked
-  `stopped`.
-- `Cluster.Healthy()` stays false on every node → the consumer's `/health` returns
-  503 → Fly's proxy never routes → the app is down. Manually `fly machine start`-ing
-  the stopped nodes does not help: they re-enter the same crash-loop.
+## Issue 1 — `ConsistencyWeak` (the default) makes reads UNAVAILABLE without a leader, and the naming hides it
 
-## Root cause
+### What happened
+The downstream app stored per-device sessions in colmena and read them with the
+default consistency (`ConsistencyWeak`). `Weak` forwards reads to the leader, so
+during a leader election / quorum blip / partition there is no reachable leader
+and **the read returns an error**. The app's auth gate mapped that error to HTTP
+401 and logged users out — even though their session was perfectly valid and sat
+replicated in every node's local SQLite. The failure only appears during
+leadership changes, so it's intermittent and very hard to reproduce.
 
-The Raft transport listener (`:RaftPort`) is only bound **inside `colmena.New`**,
-which `fly.Start` calls **after** `decideStart` has resolved the bootstrap-vs-join
-decision (`fly/fly.go`). So during the entire `decideStart` window a recovering node
-is **not listening on `:9000`** and cannot answer `RequestVote`. The deadlock is
-the interaction of three facts:
+### Root cause / why it's a footgun
+- `consistency.go`: `ConsistencyNone` (local read, always available) vs
+  `ConsistencyWeak` (leader-forwarded, fails with no leader) vs `Strong` vs
+  `Lease`. The naming is backwards-intuitive: **"Weak" sounds like "most relaxed
+  / most available", but it is LESS available than `None`.** A newcomer leaves
+  the default or picks "Weak" expecting a normal always-available DB read.
+- The godocs describe **freshness** and **latency** for each level but never
+  state the **availability** axis — i.e. that `Weak`/`Strong` reads *return an
+  error when there is no reachable leader*. That single missing sentence is what
+  made this invisible until production.
+- `config.go:174` silently defaults `Consistency` to `Weak`, so the
+  surprising-on-failure behavior is the default.
 
-1. **The bootstrap winner can't actually bootstrap.** `decideStart` picks a
-   deterministic winner (smallest advertise address, `winsElection`) and returns
-   `startPlan{bootstrap: true}`. But `colmena.New` with `cfg.Bootstrap = true` only
-   force-installs a **single-server** configuration via `raft.BootstrapCluster`
-   (`node.go:144-156`). On a node that already has persisted 3-server Raft state,
-   `BootstrapCluster` returns `raft.ErrCantBootstrap`, which is **intentionally
-   ignored** — so the node keeps its existing **3-voter** configuration and now needs
-   2 of 3 votes to elect a leader. It cannot get them (see #2), so it spins as a
-   candidate forever.
+### Tasks (priority: do the docs + typed error first — small, zero-risk)
 
-2. **The election losers wait passively and never bind their listener.** Losers
-   return to the `decideStart` loop and `probeForLeader` until `joinDeadline`
-   (`BootstrapTimeout + 60s`). They only leave the loop — and only then reach
-   `colmena.New`, binding `:9000` — if they (a) find an existing leader to join, or
-   (b) themselves win the election. In a full cold restart neither happens: there is
-   no leader (the winner from #1 can't elect alone), and they already lost the
-   election. So they never bind `:9000`, never vote, and at `joinDeadline` return the
-   error `"no leader appeared and did not win bootstrap election within ..."`.
+1. **Godoc availability line.** In `consistency.go`, add to `ConsistencyWeak`
+   and `ConsistencyStrong` an explicit availability note, e.g.:
+   `// AVAILABILITY: this read returns an error when there is no reachable
+   leader (elections, quorum loss, partition). Use ConsistencyNone or
+   ConsistencyLease if reads must stay available during leadership changes.`
+   Mirror the inverse on `None`/`Lease` ("stays available without a leader").
 
-3. **The consumer treats that error as fatal**, so the process exits, Fly restarts
-   it, and after 10 restarts the machine is parked `stopped` — removing it from the
-   set permanently and guaranteeing the survivor can never reach quorum.
+2. **README availability table.** The docs already cover latency + freshness;
+   add the missing column **"Available without a leader?"**:
+   - `None`: yes (local replica) · `Lease`: yes, within the lease window ·
+     `Weak`: **no** · `Strong`: **no**.
+   Plus a one-line decision guide: "pick by availability first, then freshness."
 
-Net: **a recovered multi-server configuration can only elect a leader if a quorum of
-its members have their Raft listeners up simultaneously, but `decideStart` prevents a
-loser from binding its listener until a leader already exists.** Circular →
-permanent deadlock. This is specific to *losing the whole quorum at once*; a rolling
-deploy (one node at a time, the designed path) is unaffected because a leader always
-remains up to be joined.
+3. **Typed sentinel error for the no-leader case.** When a `Weak`/`Strong` read
+   fails because there is no reachable leader, surface a distinguishable error
+   (e.g. `var ErrNoLeader = errors.New("colmena: no reachable leader")` or
+   `ErrUnavailable`) instead of a generic/forwarded error. Downstream had to
+   invent its own sentinel and string-match to tell "transient unavailability"
+   (→ retry / 503) apart from a real DB error or a genuine "row not found".
+   A typed error from the driver makes the correct handling obvious.
+   - Check the forward path in `driver.go` (`leaderQuery` / `QueryContext`,
+     ~lines 86–114) and wrap the no-leader/forward-failure with the sentinel.
 
-## Reproduction
+4. **(Optional) Make `OpenDB` consistency explicit.** Consider requiring an
+   explicit `ConsistencyLevel` (or at least a doc banner on the default) so the
+   availability trade-off is a conscious choice, not a silent default.
 
-1. Form a 3-node cluster on Fly with `VoterQuorum = 3`, let it commit some writes so
-   every volume has a 3-server Raft configuration persisted in `raft.db`.
-2. Stop/restart **all three** machines within a short window (simulate a host
-   restart): `fly machine restart <id>` for all three, or `fly machine stop` all
-   then `start` all.
-3. Observe: the machines never converge. Logs show one node as an endless candidate
-   (`requestVote ... connection refused`, monotonically rising term) and the others
-   `log.Fatal`-ing with `"no leader appeared and did not win bootstrap election"`,
-   then `"max restart count of 10"` → `stopped`.
+### Acceptance
+- Reading the `ConsistencyWeak` godoc tells you, without running anything, that
+  the read can fail without a leader and what to use instead.
+- A caller can do `errors.Is(err, colmena.ErrNoLeader)` to map transient
+  unavailability to a retry without string-matching.
 
-A focused unit/integration test should drive `decideStart` (and the join path) with
-a simulated discovery that returns all peers but no reachable leader, while each
-peer also has pre-existing multi-server Raft state, and assert the cluster reaches a
-single leader without external intervention.
+---
 
-## Expected behavior
+## Issue 2 — `CommandFormatVersion` bumps wedge old nodes mid-rolling-deploy; detected but not prevented
 
-A full-cluster cold restart must **self-heal**: once a quorum of the persisted
-voters are running, the cluster must elect a leader and report `Healthy()` without
-operator intervention and without data loss.
+### What happened
+The cluster ran an old colmena (format v1). Deploying a newer colmena (v0.12.0,
+which **writes** `CommandFormatVersion = 2`) one node at a time via a normal
+rolling deploy created a mixed-version window: the upgraded node became (or
+contacted) a leader and replicated v2-encoded commands, and the still-v1 nodes
+could not decode them — logging `fsm apply unmarshal error: unmarshal command
+version 2: unsupported format version` in a tight loop while silently failing to
+apply committed entries (state divergence). Recovery required rolling the odd
+node back and eventually deploying **all** nodes together (`--strategy
+immediate`). A plain "bump the dep + rolling deploy" is unsafe across a format
+bump, and nothing in the library stops you.
 
-## Suggested direction (validate before implementing)
+### Root cause / why it's a footgun
+- `command.go:88` encodes with the **constant** `CommandFormatVersion`
+  unconditionally — a node writes the newest format the moment it boots,
+  regardless of whether its peers can read it.
+- The handshake **already exchanges** `CommandFormatVersion` both ways and
+  **already detects** the skew: `node.go:674` logs
+  `"peer X (vY) writes command format vN, local max vM — will reject its log
+  entries"`. But it's a buried `log.Printf` with no guardrail and no escalation.
+- `fsm apply unmarshal error … unsupported format version` (the apply-side
+  symptom) is logged at INFO and the node keeps limping. "I cannot apply
+  committed entries" = my state is diverging — that should be loud.
 
-The core gap is that nodes recovering existing state don't bring up Raft and
-participate in an election; they gate on `decideStart` finding a leader first. Some
-viable shapes (pick/combine after analysis):
+### Tasks (priority: the negotiated write-version is the highest-value change in this file)
 
-- **Recover-then-elect instead of wait.** When a node has pre-existing Raft state
-  for a cluster it's a member of, skip the passive "wait for a leader" path and go
-  straight to `colmena.New` with its existing configuration (binding `:9000` and
-  participating in the normal Raft election) rather than depending on `probeForLeader`
-  to discover a leader that can't exist yet. Real Raft members re-electing among
-  themselves is exactly the supported path — the `fly` bootstrap gate is only needed
-  for the *first ever* cold start, not for recovery.
-- **Single-server force-recovery as a last resort.** If, after a bounded timeout, the
-  deterministic election winner still can't reach quorum, have *only that one node*
-  (winner is agreed by all via `winsElection`, so this is split-brain-safe) call
-  `raft.RecoverCluster` to rewrite its configuration to single-server, become leader,
-  then re-add the other voters as they reappear (`promoteIfNeeded`/`AddVoter` already
-  exist). Preserves the FSM/SQLite data (only `raft.db` config is rewritten).
-- **Don't make bootstrap failure fatal in the consumer.** Independently, the
-  `mediavida` consumer's `startColmenaCluster` should retry `fly.Start` with backoff
-  instead of `log.Fatal` (which trips Fly's max-restart-count and parks the machine).
-  But that alone is insufficient — the library must also stop deadlocking.
+1. **Negotiated effective write-version (the real fix).** The leader must not
+   *write* a newer `CommandFormatVersion` until **every current voter** advertises
+   it can *read* it. Compute `effectiveWriteVersion = min(maxSupportedFormat
+   across all voters)` from the handshake data already collected, and have the
+   command encoder (`command.go:88`) use `effectiveWriteVersion` instead of the
+   raw constant. Bump to v2 only once all voters report ≥ v2. This makes rolling
+   upgrades **safe by construction** — removing the entire class of "wedged
+   mid-deploy" bugs. Add tests: 3-node cluster, one node upgraded → leader keeps
+   writing v1 until all upgraded, then flips to v2; old nodes never see an
+   undecodable entry. Apply the same idea to `SnapshotFormatVersion`.
 
-## Constraints / watch-outs
+2. **Surface the skew in `Stats()` / health.** Expose `FormatSkew bool` and/or
+   `PeersBehind []NodeID` (and the inverse — peers ahead of me) so a health check
+   or dashboard shows "cluster mid-migration" instead of it only being visible as
+   `fsm apply` log spam. Ideally a health check can be wired to fail on skew.
 
-- **No split-brain.** Any force-recovery or self-bootstrap must be performed by at
-  most one node for a given member set. `winsElection` (Advertise-keyed, agreed by
-  all nodes in both healthy and degraded discovery modes) is the existing
-  single-winner primitive — reuse it; don't invent a second election that could
-  disagree.
-- **No data loss.** The FSM SQLite files (`<name>.db`, e.g. `mv.db`, `default.db`)
-  live on the volume and are only overwritten when an FSM snapshot is installed
-  (`fsm.go` `Restore`). A fix must not drop them. `RecoverCluster` rewrites only the
-  Raft log/config, which is the desired scope.
-- **Don't regress the rolling-deploy path.** The current `decideStart` gate exists to
-  prevent split-brain on the *initial* cold start and to keep rolling deploys
-  quorum-safe (`min_machines_running`, `max_unavailable = 1`). New recovery behavior
-  must only trigger on true full-quorum-loss, not during a normal one-at-a-time
-  deploy where a leader is still reachable.
+3. **Escalate the apply-side error.** Raise `fsm apply unmarshal error:
+   unsupported format version` from INFO to WARN/ERROR, emit a metric/counter,
+   and consider failing readiness — silent non-apply of committed entries is a
+   divergence condition, not an info event.
 
-## Acceptance criteria
+4. **Write `UPGRADING.md`.** Document that crossing a `CommandFormatVersion`
+   (or `SnapshotFormatVersion`) bump is a **format migration, not a normal
+   deploy**. Until task 1 lands, the safe procedure is: deploy all nodes together
+   (Fly `--strategy immediate`, or stop-all/start-all) so there is no mixed-format
+   window; do NOT do a one-at-a-time rolling deploy across a format bump. Note
+   that the new version can *read* both old and new formats (decode switch in
+   `command.go`, `case 1` / `case 2`) — the danger is purely old nodes reading
+   new writes during the transition.
 
-- Restarting all N voters of a formed cluster simultaneously results in a single
-  elected leader and `Healthy() == true` on all nodes, with no manual steps.
-- No split-brain under simultaneous restart, partial restarts, or flapping nodes.
-- Pre-existing FSM data survives the recovery.
-- The rolling-deploy / single-cold-start behaviors are unchanged (existing tests in
-  `fly/` still pass; add a regression test for the full-restart case).
+### Acceptance
+- A one-at-a-time rolling deploy across a `CommandFormatVersion` bump no longer
+  produces `unsupported format version` on any node (leader writes the old
+  format until all voters support the new one).
+- `Stats()` / health makes a version-skewed cluster obvious without log diving.
 
-## Resolution (implemented)
+---
 
-Fixed via **direction #1 (recover-then-elect)** — the clean, split-brain-safe
-shape. Changes:
-
-- **`colmena.HasExistingState(dataDir)`** (`node.go`): opens (and immediately
-  closes) the persisted Raft stores and reports whether the data dir already
-  holds cluster state — a non-empty log, a recorded term, or a snapshot. It
-  distinguishes a true first-ever cold start from a returning member.
-- **`colmena.Config.Recover`** (`config.go`): a new start mode meaning "bring
-  Raft up on the persisted on-disk configuration — no `Bootstrap`, no `Join` —
-  and participate in the normal election." `validate()` accepts it and rejects
-  combining it with `Bootstrap`/`Join`. In `New` it simply skips both the
-  single-server `BootstrapCluster` and the join RPC, so Raft loads its persisted
-  multi-server configuration, binds `:RaftPort`, and elects normally.
-- **`fly.Start`** (`fly/fly.go`): before the cold-start gate, it calls
-  `HasExistingState`. If state exists, it **bypasses `decideStart` entirely** and
-  starts the node with `Recover = true`. The gate (and its `decideStart` →
-  `log.Fatal` error path) now only runs on a true first cold start (no state),
-  where it is still needed to avoid split-brain while force-installing a
-  single-server configuration. This breaks the circular deadlock: a recovering
-  loser no longer waits for a leader before binding its listener — it binds
-  immediately and votes, so a quorum of returning members re-elects on its own.
-  Safety comes from Raft's own quorum rule (a majority of the persisted voters
-  must agree), so no second election primitive is introduced.
-- **Resource-leak fix** (`node.go`): `Node.Close` never closed the BoltDB log
-  store (`raft.Shutdown` does not close externally-provided stores), leaking the
-  file lock until process exit. `Close` now closes it after Raft shuts down — a
-  latent bug on its own, and required for the documented "call `HasExistingState`
-  after `Close`" contract to actually work (otherwise the reopen blocks on the
-  stale lock).
-
-Regression tests: `fly.TestFullRestartReElects` forms a 3-voter cluster, closes
-all nodes (state preserved), restarts every node with no bootstrap/join, and
-asserts exactly one leader re-emerges with all three back as voters — the
-full-quorum-loss scenario this bug describes. `fly.TestHasExistingState` and the
-extended `TestConfig_Validate` cases cover the new primitives.
-
-**Out of scope (separate repo):** direction #3 — making `startColmenaCluster`'s
-`fly.Start` failure retry with backoff instead of `log.Fatal` — lives in the
-`mediavida` consumer. With this library fix the consumer no longer reaches the
-fatal path on a full restart, but the retry hardening is still worth doing there
-independently.
-
-## Workaround used in the 2026-06-23 incident (operational, not a fix)
-
-Data-preserving manual recovery: on every node `rm -f /data/raft.db /data/raft.db-*`
-and `rm -rf /data/snapshots` (keeping `mv.db`/`default.db`), then `fly machine
-restart` all nodes together. With the Raft log gone, the election winner's
-`BootstrapCluster` runs on an empty state (no `ErrCantBootstrap`), forms a fresh
-single-server cluster, becomes leader, and the others join as voters. The SQLite
-data survives because no snapshot exists to `Restore` over it. This is a manual
-break-glass, not the fix this bug asks for.
+## Notes / cross-references
+- `BUGS.md` item #1 ("Query RPC is not leadership-gated → forwarded reads
+  silently return stale data") shows awareness of consistency subtleties; the
+  Issue 1 docs work should tie into that.
+- `PLAN_FLY.md` §3.5 and prior cold-start work already cover rolling-deploy
+  quorum safety and the full-cluster-restart deadlock (fixed in v0.12.0); Issue 2
+  is the *format-version* dimension of safe rolling deploys, which those docs
+  don't yet address.
+- Keep changes backward-compatible: the decode side must continue to read all
+  previously-written format versions (it does today: `command.go` `case 1`/`2`).

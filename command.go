@@ -63,29 +63,55 @@ type wireCommandV2 struct {
 // Older Colmena versions (<= v0.5.x) wrote raw JSON with no envelope, and
 // v0.6–v0.10 wrote the v1 envelope (plain JSON args). Both can still be read
 // back by unmarshalCommand, so a cluster's existing Raft log survives an
-// upgrade — only new entries get the v2 format. Note: v2 entries are rejected
-// by pre-v0.11 nodes, so upgrade every node before resuming writes.
+// upgrade — only new entries get the v2 format. v2 entries cannot be read by
+// pre-v0.11 nodes, but the leader no longer writes v2 until every voter
+// advertises it can read it (see versionNegotiator / marshalCommandVersion), so
+// a rolling upgrade across the bump is safe by construction. This constant-
+// version helper is retained for tests; production paths call
+// marshalCommandVersion with the node's negotiated effective version.
 func marshalCommand(cmd *Command) ([]byte, error) {
-	wire := wireCommandV2{
-		Type:       cmd.Type,
-		DB:         cmd.DB,
-		Statements: make([]wireStatementV2, len(cmd.Statements)),
-	}
-	for i, st := range cmd.Statements {
-		ws := wireStatementV2{SQL: st.SQL}
-		if len(st.Args) > 0 {
-			ws.Args = make([]TaggedValue, len(st.Args))
-			for j, a := range st.Args {
-				ws.Args[j] = encodeTaggedValue(a)
-			}
+	return marshalCommandVersion(cmd, CommandFormatVersion)
+}
+
+// marshalCommandVersion serializes cmd at an explicit envelope version. The
+// leader passes its negotiated effectiveCommandVersion() here so it never
+// writes a format an older voter cannot decode (see versionNegotiator). v1
+// emits the plain-JSON payload (numeric args coerced to float64, []byte to
+// base64 TEXT — the historical v1 behavior); v2 emits TaggedValue args.
+// An unsupported version is a programming error and returns an error rather
+// than writing a blob no peer can read.
+func marshalCommandVersion(cmd *Command, version int) ([]byte, error) {
+	switch version {
+	case 1:
+		payload, err := json.Marshal(cmd)
+		if err != nil {
+			return nil, fmt.Errorf("colmena: marshal command v1: %w", err)
 		}
-		wire.Statements[i] = ws
+		return encodeEnvelope( /* kind */ FormatKindCommand /* version */, 1, payload), nil
+	case 2:
+		wire := wireCommandV2{
+			Type:       cmd.Type,
+			DB:         cmd.DB,
+			Statements: make([]wireStatementV2, len(cmd.Statements)),
+		}
+		for i, st := range cmd.Statements {
+			ws := wireStatementV2{SQL: st.SQL}
+			if len(st.Args) > 0 {
+				ws.Args = make([]TaggedValue, len(st.Args))
+				for j, a := range st.Args {
+					ws.Args[j] = encodeTaggedValue(a)
+				}
+			}
+			wire.Statements[i] = ws
+		}
+		payload, err := json.Marshal(wire)
+		if err != nil {
+			return nil, fmt.Errorf("colmena: marshal command v2: %w", err)
+		}
+		return encodeEnvelope( /* kind */ FormatKindCommand /* version */, 2, payload), nil
+	default:
+		return nil, fmt.Errorf("colmena: marshal command version %d: %w", version, ErrUnsupportedFormatVersion)
 	}
-	payload, err := json.Marshal(wire)
-	if err != nil {
-		return nil, fmt.Errorf("colmena: marshal command: %w", err)
-	}
-	return encodeEnvelope(FormatKindCommand, CommandFormatVersion, payload), nil
 }
 
 // unmarshalCommand parses a Raft log entry written by any Colmena version.

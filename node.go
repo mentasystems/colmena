@@ -34,6 +34,19 @@ func init() {
 // and the leader address is unknown for forwarding.
 var ErrNotLeader = errors.New("colmena: not the leader")
 
+// ErrNoLeader is returned by a leader-routed read or write when there is no
+// reachable leader: an in-progress election, quorum loss, or a network
+// partition. It is a TRANSIENT, retryable condition — distinct from a real SQL
+// error and from a genuine "no rows" — so callers should map it to a retry or
+// an HTTP 503 rather than a hard failure. Match it with
+// errors.Is(err, colmena.ErrNoLeader) instead of string-matching the message.
+//
+// The replicated data is intact on every node's local SQLite during this
+// window; only the leader-routed path (ConsistencyWeak/ConsistencyStrong, and
+// all writes) is briefly unavailable. Reads issued with ConsistencyNone or
+// ConsistencyLease stay available throughout (see consistency.go).
+var ErrNoLeader = errors.New("colmena: no reachable leader") // global-ok: immutable sentinel error
+
 // Node is a single member of a Colmena distributed SQLite cluster.
 type Node struct {
 	config   Config
@@ -52,6 +65,7 @@ type Node struct {
 	batcher   *WriteBatcher
 	lease     *readLease
 	leaseStop chan struct{}
+	versions  *versionNegotiator
 	metrics   metricsCounters
 	backup    *backupManager
 	handlers  handlerRegistry
@@ -177,7 +191,22 @@ func New(cfg Config) (*Node, error) {
 
 	node.lease = &readLease{}
 	node.leaseStop = make(chan struct{})
+	node.versions = newVersionNegotiator()
+	// Learn peer formats from this node's own outbound handshakes too, so a
+	// follower knows the leader's version before it forwards a write.
+	node.rpcPool.onHello = func(resp *RPCHelloResponse) {
+		node.versions.record(resp.NodeID /* command */, resp.CommandFormatVersion /* snapshot */, resp.SnapshotFormatVersion)
+	}
+	// The FSM writes snapshots at the negotiated effective version, same
+	// guardrail as the command log.
+	f.snapshotVersionFn = node.effectiveSnapshotVersion
+	f.onFormatReject = func() { node.metrics.formatRejectsTotal.Add(1) }
+	// Seed the effective write version from the current (possibly single-node)
+	// configuration so a freshly bootstrapped leader writes its newest format
+	// immediately instead of waiting a probe cycle.
+	node.recomputeEffectiveVersions()
 	go node.leaseLoop()
+	go node.versionLoop() // goroutine-ok: exits when Close() closes leaseStop
 
 	if cfg.Backup != nil && cfg.Backup.Backend != nil {
 		defStore, err := sm.get("default")
@@ -231,13 +260,26 @@ func HasExistingState(dataDir string) (bool, error) {
 	return has, nil
 }
 
-// DB returns a *sql.DB for the "default" database with the node's default consistency.
+// DB returns a *sql.DB for the "default" database with the node's default
+// consistency (Config.Consistency, which defaults to ConsistencyWeak).
+//
+// AVAILABILITY: the default ConsistencyWeak forwards reads to the leader and
+// returns ErrNoLeader when none is reachable (elections, quorum loss,
+// partition). If your reads must stay available during leadership changes —
+// e.g. an auth/session lookup — open with ConsistencyNone or ConsistencyLease
+// via OpenDB, or pass WithConsistency per query. See consistency.go.
 func (n *Node) DB() *sql.DB {
 	return n.OpenDB("default", n.config.Consistency)
 }
 
 // OpenDB returns a *sql.DB for the named database with the given default consistency.
 // Each database maps to a separate SQLite file. Cached: same name returns same instance.
+//
+// Choose the consistency level by availability first, then freshness: the
+// leader-routed levels (ConsistencyWeak, ConsistencyStrong) return ErrNoLeader
+// when there is no reachable leader, while ConsistencyNone (and ConsistencyLease
+// within its lease window) keep serving from the local replica. See
+// consistency.go for the full trade-off.
 func (n *Node) OpenDB(name string, consistency ConsistencyLevel) *sql.DB {
 	n.dbsMu.Lock()
 	defer n.dbsMu.Unlock()
@@ -290,7 +332,7 @@ func (n *Node) Close() error {
 	n.dbsMu.Unlock()
 
 	if n.rpcListener != nil {
-		n.rpcListener.Close()
+		_ = n.rpcListener.Close() // safe-ignore: closing listener at shutdown; nothing to do on error
 	}
 	// Force-close live RPC connections so idle ServeConn loops exit, then
 	// drain in-flight handlers before tearing down stores and raft — a
@@ -339,19 +381,18 @@ func (n *Node) execute(cmd *Command) (*ApplyResult, error) {
 			result, err = n.batcher.submit(cmd)
 		} else {
 			var data []byte
-			data, err = marshalCommand(cmd)
+			data, err = marshalCommandVersion(cmd, n.effectiveCommandVersion())
 			if err != nil {
 				return nil, err
 			}
 			result, err = n.applyRaft(data)
 		}
 	} else {
-		var data []byte
-		data, err = marshalCommand(cmd)
-		if err != nil {
-			return nil, err
-		}
-		result, err = n.forwardExecute(data)
+		// Forward to the leader. forwardExecute marshals internally, after the
+		// handshake has recorded the leader's supported format — so a new
+		// follower preserves typed args (v2) when the leader can read them, and
+		// only downgrades for a genuinely old leader.
+		result, err = n.forwardExecute(cmd)
 	}
 	if err == nil {
 		n.metrics.writesTotal.Add(1)
@@ -369,6 +410,8 @@ func (n *Node) applyRaft(data []byte) (*ApplyResult, error) {
 		return nil, fmt.Errorf("colmena: unexpected apply response type")
 	}
 	if resp.Error != "" {
+		// This is the FSM's own apply error (e.g. a SQL constraint violation),
+		// not a leadership condition — surface it verbatim.
 		return nil, errors.New(resp.Error)
 	}
 	return resp, nil
@@ -376,25 +419,49 @@ func (n *Node) applyRaft(data []byte) (*ApplyResult, error) {
 
 func (n *Node) verifyLeader() error { return n.raft.VerifyLeader().Error() }
 
-func (n *Node) forwardExecute(data []byte) (*ApplyResult, error) {
+// rpcErrNotLeader is the error string the leader-side RPC handlers return when
+// they discover they are no longer the leader between routing and serving the
+// request. mapLeaderRPCError recognises it and re-types it as ErrNoLeader so
+// the caller sees a retryable transient condition.
+const rpcErrNotLeader = "not the leader"
+
+// mapLeaderRPCError converts a leader-side resp.Error string into a typed error.
+// The "leadership moved mid-request" case becomes ErrNoLeader (transient,
+// retryable); everything else is a genuine server-side error and is returned
+// verbatim.
+func mapLeaderRPCError(msg string) error {
+	if msg == rpcErrNotLeader {
+		return fmt.Errorf("colmena: leader stepped down mid-request: %w", ErrNoLeader)
+	}
+	return errors.New(msg)
+}
+
+func (n *Node) forwardExecute(cmd *Command) (*ApplyResult, error) {
 	leaderAddr, _ := n.raft.LeaderWithID()
 	if leaderAddr == "" {
-		return nil, ErrNotLeader
+		return nil, ErrNoLeader
 	}
 	addr := string(leaderAddr)
 	client, err := n.rpcPool.get(addr)
 	if err != nil {
-		return nil, fmt.Errorf("colmena: connect to leader: %w", err)
+		// Can't even reach the (believed) leader — transient unavailability.
+		return nil, fmt.Errorf("colmena: connect to leader: %w: %w", err, ErrNoLeader)
+	}
+	// Marshal only now that get() has run the Hello handshake and recorded the
+	// leader's supported format, so forwardWriteVersion sees an accurate value.
+	data, err := marshalCommandVersion(cmd, n.forwardWriteVersion())
+	if err != nil {
+		return nil, err
 	}
 	n.metrics.rpcForwardsTotal.Add(1)
 	req := &RPCExecuteRequest{Command: data}
 	var resp RPCExecuteResponse
 	if err := client.Call("Colmena.Execute", req, &resp); err != nil {
 		n.rpcPool.markFailed(addr)
-		return nil, fmt.Errorf("colmena: forward execute: %w", err)
+		return nil, fmt.Errorf("colmena: forward execute: %w: %w", err, ErrNoLeader)
 	}
 	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
+		return nil, mapLeaderRPCError(resp.Error)
 	}
 	return &ApplyResult{Results: resp.Results}, nil
 }
@@ -403,12 +470,13 @@ func (n *Node) forwardExecute(data []byte) (*ApplyResult, error) {
 func (n *Node) forwardQuery(dbName, sqlStr string, args []any, consistency ConsistencyLevel) (*RPCQueryResponse, error) {
 	leaderAddr, _ := n.raft.LeaderWithID()
 	if leaderAddr == "" {
-		return nil, ErrNotLeader
+		return nil, ErrNoLeader
 	}
 	addr := string(leaderAddr)
 	client, err := n.rpcPool.get(addr)
 	if err != nil {
-		return nil, fmt.Errorf("colmena: connect to leader: %w", err)
+		// Can't even reach the (believed) leader — transient unavailability.
+		return nil, fmt.Errorf("colmena: connect to leader: %w: %w", err, ErrNoLeader)
 	}
 	n.metrics.rpcForwardsTotal.Add(1)
 	iArgs := make([]any, len(args))
@@ -417,10 +485,10 @@ func (n *Node) forwardQuery(dbName, sqlStr string, args []any, consistency Consi
 	var resp RPCQueryResponse
 	if err := client.Call("Colmena.Query", req, &resp); err != nil {
 		n.rpcPool.markFailed(addr)
-		return nil, fmt.Errorf("colmena: forward query: %w", err)
+		return nil, fmt.Errorf("colmena: forward query: %w: %w", err, ErrNoLeader)
 	}
 	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
+		return nil, mapLeaderRPCError(resp.Error)
 	}
 	return &resp, nil
 }
@@ -428,22 +496,23 @@ func (n *Node) forwardQuery(dbName, sqlStr string, args []any, consistency Consi
 func (n *Node) forwardHandler(name string, data []byte) ([]byte, error) {
 	leaderAddr, _ := n.raft.LeaderWithID()
 	if leaderAddr == "" {
-		return nil, ErrNotLeader
+		return nil, ErrNoLeader
 	}
 	addr := string(leaderAddr)
 	client, err := n.rpcPool.get(addr)
 	if err != nil {
-		return nil, fmt.Errorf("colmena: connect to leader: %w", err)
+		// Can't even reach the (believed) leader — transient unavailability.
+		return nil, fmt.Errorf("colmena: connect to leader: %w: %w", err, ErrNoLeader)
 	}
 	n.metrics.rpcForwardsTotal.Add(1)
 	req := &RPCForwardRequest{Handler: name, Payload: data}
 	var resp RPCForwardResponse
 	if err := client.Call("Colmena.Forward", req, &resp); err != nil {
 		n.rpcPool.markFailed(addr)
-		return nil, fmt.Errorf("colmena: forward handler: %w", err)
+		return nil, fmt.Errorf("colmena: forward handler: %w: %w", err, ErrNoLeader)
 	}
 	if resp.Error != "" {
-		return nil, errors.New(resp.Error)
+		return nil, mapLeaderRPCError(resp.Error)
 	}
 	return resp.Payload, nil
 }
@@ -679,6 +748,11 @@ func (s *RPCService) Hello(req *RPCHelloRequest, resp *RPCHelloResponse) error {
 		log.Printf("colmena: peer %s (v%s) writes snapshot format v%d, local max v%d — will reject its snapshots",
 			req.NodeID, req.LibraryVersion, req.SnapshotFormatVersion, SnapshotFormatVersion)
 	}
+	// Record the dialing peer's advertised formats so the negotiator's view
+	// converges from inbound handshakes too, not only the leader's probe loop.
+	if s.node.versions != nil {
+		s.node.versions.record(req.NodeID /* command */, req.CommandFormatVersion /* snapshot */, req.SnapshotFormatVersion)
+	}
 	resp.NodeID = s.node.config.NodeID
 	resp.LibraryVersion = LibraryVersion
 	resp.ProtocolVersion = ProtocolVersion
@@ -694,10 +768,26 @@ func (s *RPCService) Execute(req *RPCExecuteRequest, resp *RPCExecuteResponse) e
 	}
 	defer s.node.rpcWG.Done()
 	if s.node.raft.State() != raft.Leader {
-		resp.Error = "not the leader"
+		resp.Error = rpcErrNotLeader
 		return nil
 	}
-	result, err := s.node.applyRaft(req.Command)
+	// Re-marshal the forwarded command at this leader's negotiated effective
+	// version before appending it to the log. The forwarding follower picked a
+	// version safe for *this* leader to read, but only the leader knows what
+	// every voter can read — so the leader is the single authority on the
+	// version that actually lands in the Raft log. This makes the write format
+	// safe for the whole cluster regardless of which node originated the write.
+	cmd, err := unmarshalCommand(req.Command)
+	if err != nil {
+		resp.Error = err.Error()
+		return nil
+	}
+	data, err := marshalCommandVersion(cmd, s.node.effectiveCommandVersion())
+	if err != nil {
+		resp.Error = err.Error()
+		return nil
+	}
+	result, err := s.node.applyRaft(data)
 	if err != nil {
 		resp.Error = err.Error()
 		return nil
@@ -719,7 +809,7 @@ func (s *RPCService) Query(req *RPCQueryRequest, resp *RPCQueryResponse) error {
 	}
 	defer s.node.rpcWG.Done()
 	if s.node.raft.State() != raft.Leader {
-		resp.Error = "not the leader"
+		resp.Error = rpcErrNotLeader
 		return nil
 	}
 	if req.Consistency == ConsistencyStrong {
@@ -755,7 +845,7 @@ func (s *RPCService) Query(req *RPCQueryRequest, resp *RPCQueryResponse) error {
 		for i := range values {
 			ptrs[i] = &values[i]
 		}
-		if err := rows.Scan(ptrs...); err != nil {
+		if err = rows.Scan(ptrs...); err != nil {
 			resp.Error = err.Error()
 			return nil
 		}
@@ -769,7 +859,7 @@ func (s *RPCService) Query(req *RPCQueryRequest, resp *RPCQueryResponse) error {
 		resp.TaggedRows = append(resp.TaggedRows, tagged)
 		resp.Rows = append(resp.Rows, legacy)
 	}
-	if err := rows.Err(); err != nil {
+	if err = rows.Err(); err != nil {
 		resp.Error = err.Error()
 	}
 	return nil
@@ -782,7 +872,7 @@ func (s *RPCService) Forward(req *RPCForwardRequest, resp *RPCForwardResponse) e
 	}
 	defer s.node.rpcWG.Done()
 	if s.node.raft.State() != raft.Leader {
-		resp.Error = "not the leader"
+		resp.Error = rpcErrNotLeader
 		return nil
 	}
 	data, err := s.node.handlers.call(req.Handler, req.Payload)
@@ -802,7 +892,7 @@ func (s *RPCService) Join(req *RPCJoinRequest, resp *RPCJoinResponse) error {
 	defer s.node.rpcWG.Done()
 	if s.node.raft.State() != raft.Leader {
 		leaderAddr, _ := s.node.raft.LeaderWithID()
-		resp.Error = "not the leader"
+		resp.Error = rpcErrNotLeader
 		resp.LeaderAddr = string(leaderAddr)
 		return nil
 	}
@@ -860,9 +950,9 @@ func (n *Node) join() error {
 		}
 		if resp.Error != "" {
 			if resp.LeaderAddr != "" {
-				if c2, err := n.rpcPool.get(resp.LeaderAddr); err == nil {
+				if c2, gerr := n.rpcPool.get(resp.LeaderAddr); gerr == nil {
 					var r2 RPCJoinResponse
-					if err := c2.Call("Colmena.Join", req, &r2); err == nil && r2.Error == "" {
+					if cerr := c2.Call("Colmena.Join", req, &r2); cerr == nil && r2.Error == "" {
 						return nil
 					}
 				}

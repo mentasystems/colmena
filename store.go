@@ -309,10 +309,18 @@ func (sm *storeManager) get(name string) (*store, error) {
 // wrote a single raw SQLite file). Both shapes are still accepted by
 // restore() so rolling upgrades and old backups keep working.
 func (sm *storeManager) snapshot(w io.Writer) error {
+	return sm.snapshotVersioned(w, SnapshotFormatVersion)
+}
+
+// snapshotVersioned writes the snapshot at an explicit envelope version. The
+// FSM passes the leader's negotiated effectiveSnapshotVersion() so a future
+// snapshot-format bump never produces an envelope a lagging voter cannot
+// restore — the same guardrail marshalCommandVersion gives the Raft log.
+func (sm *storeManager) snapshotVersioned(w io.Writer, version int) error {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	if err := writeEnvelopeHeader(w, FormatKindSnapshot, SnapshotFormatVersion); err != nil {
+	if err := writeEnvelopeHeader(w /* kind */, FormatKindSnapshot /* version */, uint8(version)); err != nil {
 		return fmt.Errorf("colmena: snapshot header: %w", err)
 	}
 

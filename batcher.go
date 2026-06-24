@@ -128,7 +128,7 @@ func (b *WriteBatcher) flushGroup(db string, entries []batchEntry) {
 		Statements: allStmts,
 	}
 
-	data, err := marshalCommand(merged)
+	data, err := marshalCommandVersion(merged, b.node.effectiveCommandVersion())
 	if err != nil {
 		for _, e := range entries {
 			e.result <- batchResult{err: err}
@@ -154,7 +154,7 @@ func (b *WriteBatcher) flushGroup(db string, entries []batchEntry) {
 }
 
 func (b *WriteBatcher) applyDirect(cmd *Command) (*ApplyResult, error) {
-	data, err := marshalCommand(cmd)
+	data, err := marshalCommandVersion(cmd, b.node.effectiveCommandVersion())
 	if err != nil {
 		return nil, err
 	}

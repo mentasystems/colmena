@@ -21,6 +21,11 @@ type rpcPool struct {
 	// localNodeID is sent in the Hello handshake so the peer can log which
 	// node is connecting. Zero value is fine (the handshake is log-only).
 	localNodeID string
+
+	// onHello, if set, receives every successful Hello response so the version
+	// negotiator learns a peer's advertised formats the moment this node dials
+	// it — not only via the leader's probe loop. Set by Node after construction.
+	onHello func(resp *RPCHelloResponse)
 }
 
 type rpcEntry struct {
@@ -108,6 +113,9 @@ func (p *rpcPool) sayHello(rpcAddr string, entry *rpcEntry) {
 		return
 	}
 	entry.peerVersion = resp.LibraryVersion
+	if p.onHello != nil {
+		p.onHello(&resp)
+	}
 	if resp.ProtocolVersion != ProtocolVersion {
 		log.Printf("colmena: peer %s runs protocol v%d, local v%d — expect issues",
 			rpcAddr, resp.ProtocolVersion, ProtocolVersion)
