@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -258,6 +259,62 @@ func HasExistingState(dataDir string) (bool, error) {
 		return false, fmt.Errorf("colmena: inspect raft state: %w", err)
 	}
 	return has, nil
+}
+
+// WipeLocalState deletes all of a node's persisted Raft state and replicated
+// SQLite databases under dataDir, returning it to a pristine "never joined"
+// condition so the next New can rejoin a cluster as a brand-new member. It
+// removes raft.db, the snapshots directory, and every <name>.db store file
+// (with its -wal/-shm sidecars), but leaves the directory itself and any
+// non-Colmena files intact. After it returns, HasExistingState reports false.
+//
+// It must be called with no live Node holding dataDir — BoltDB keeps an
+// exclusive file lock — i.e. before New or after Close, never concurrently.
+//
+// This is a DESTRUCTIVE, last-resort recovery primitive: the local replica is
+// discarded and re-fetched from the cluster leader on rejoin. Use it only when
+// a node has been removed from the cluster configuration and can no longer
+// participate (its elections are rejected as "not in configuration" forever —
+// see the fly package's orphan self-heal), or to force a clean start. Wiping
+// the SQLite stores too (not just the Raft log) is deliberate: a fresh joiner
+// must receive a faithful copy from the leader rather than risk replaying the
+// leader's log on top of stale local rows.
+func WipeLocalState(dataDir string) error {
+	var firstErr error
+	rm := func(path string) {
+		if err := os.RemoveAll(path); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	// Raft log+stable store and snapshots.
+	rm(filepath.Join(dataDir, "raft.db"))
+	rm(filepath.Join(dataDir, "snapshots"))
+
+	// Replicated SQLite stores: <name>.db plus WAL/SHM sidecars. raft.db is the
+	// BoltDB store handled above; never re-match it here.
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return firstErr
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		return firstErr
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name == "raft.db" {
+			continue
+		}
+		if strings.HasSuffix(name, ".db") || strings.HasSuffix(name, ".db-wal") || strings.HasSuffix(name, ".db-shm") {
+			rm(filepath.Join(dataDir, name))
+		}
+	}
+	return firstErr
 }
 
 // DB returns a *sql.DB for the "default" database with the node's default
@@ -636,6 +693,13 @@ type RPCStatusResponse struct {
 	// to gate voter promotion on a candidate that won't stall the quorum.
 	// Pre-v0.11 peers don't send it (gob decodes it as false).
 	CaughtUp bool
+	// Members lists the node IDs in this node's view of the Raft configuration
+	// (voters and non-voters). It lets a peer authoritatively answer "am I still
+	// in the cluster configuration?" — used by the fly package's orphan
+	// self-heal to tell a node removed-while-offline apart from a transient
+	// election. Pre-v0.13 peers don't send it (gob decodes it as nil); treat an
+	// empty list as "unknown", never as "you were removed".
+	Members []string
 }
 
 type RPCService struct{ node *Node }
@@ -672,6 +736,7 @@ func (s *RPCService) Status(req *RPCStatusRequest, resp *RPCStatusResponse) erro
 			if srv.Suffrage == raft.Voter {
 				resp.Voters++
 			}
+			resp.Members = append(resp.Members, string(srv.ID))
 		}
 	}
 	resp.CaughtUp = resp.IsLeader || followerCaughtUp(s.node.raft.Stats())

@@ -84,6 +84,27 @@ type Config struct {
 	// Consistency is the default read consistency. Default: ConsistencyNone.
 	Consistency colmena.ConsistencyLevel
 
+	// --- orphan self-heal (removed-while-offline recovery) ---
+
+	// ForceCleanStart discards any persisted local Raft state at startup and
+	// rejoins the cluster as a brand-new member. An operator escape hatch for a
+	// node wedged by stale state. Also enabled by COLMENA_FORCE_CLEAN_START=1.
+	// Off by default.
+	ForceCleanStart bool
+
+	// OrphanConfirmations is how many consecutive discovery ticks a healthy peer
+	// must report that this node is absent from the cluster configuration before
+	// the node self-heals (wipe local state + restart fresh). Guards against
+	// acting on a single stale probe. Default: 3.
+	OrphanConfirmations int
+
+	// OnSelfHeal, if set, is invoked after the node has been confirmed orphaned
+	// and its local state wiped, instead of the default action (os.Exit(1) so
+	// the Fly machine restarts and rejoins fresh). Lets a non-Fly host or a test
+	// substitute its own restart strategy. The node has already been closed and
+	// its state removed when this runs.
+	OnSelfHeal func(reason string)
+
 	// TLSConfig enables mutual TLS on the Raft transport and RPC sidecar,
 	// passed straight through to colmena.Config.TLSConfig. Off by default on
 	// Fly: the 6PN is already a private WireGuard mesh per org. To enable,
@@ -156,6 +177,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Consistency == 0 {
 		c.Consistency = colmena.ConsistencyNone
+	}
+	if c.OrphanConfirmations == 0 {
+		c.OrphanConfirmations = 3
+	}
+	if os.Getenv("COLMENA_FORCE_CLEAN_START") == "1" {
+		c.ForceCleanStart = true
 	}
 	if c.LogOutput == nil {
 		c.LogOutput = os.Stderr

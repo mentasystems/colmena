@@ -10,6 +10,15 @@
 // quorum, and exposes a health check the consumer can wire into fly.toml so a
 // rolling deploy only advances once a replacement has rejoined and caught up.
 //
+// It also self-heals a node that was removed from the cluster configuration
+// while it was offline. Such a node comes back holding stale Raft state that
+// still names it a member; its elections are rejected forever ("not in
+// configuration") and only a kill-and-restart breaks the loop — endlessly. When
+// the node observes that its own committed configuration no longer lists it and
+// a healthy peer confirms the cluster has moved on, it wipes its local state and
+// restarts to rejoin as a brand-new member (see Config.OrphanConfirmations and
+// Config.OnSelfHeal; Config.ForceCleanStart forces it manually).
+//
 // Pin all nodes to a single region: Raft is latency-sensitive and cross-region
 // quorum is out of scope.
 package fly
@@ -18,6 +27,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strconv"
 	"sync"
@@ -89,6 +99,16 @@ func Start(cfg Config) (*Cluster, error) {
 	// voters must agree). The gate is only needed for the first-ever cold start
 	// (no state), where it prevents split-brain while force-installing a
 	// single-server configuration.
+	// ForceCleanStart is the operator escape hatch: drop any persisted state so
+	// the node below takes the fresh cold-start/join path instead of recovering
+	// onto a (possibly stale) on-disk configuration.
+	if cfg.ForceCleanStart {
+		logger.Printf("ForceCleanStart set — discarding persisted local state before starting")
+		if err := colmena.WipeLocalState(cfg.DataDir); err != nil {
+			logger.Printf("warning: ForceCleanStart wipe failed: %v", err)
+		}
+	}
+
 	var plan startPlan
 	if hasState, stErr := colmena.HasExistingState(cfg.DataDir); stErr != nil {
 		logger.Printf("warning: could not inspect existing raft state: %v — treating as a fresh node", stErr)
@@ -287,12 +307,21 @@ func (c *Cluster) run(ctx context.Context, cancel context.CancelFunc) {
 	defer tick.Stop()
 
 	lastSeen := make(map[string]time.Time)
+	orphanStrikes := 0
 	for {
 		select {
 		case <-c.stop:
 			return
 		case <-tick.C:
 			c.refreshVoterFlag()
+			// Self-heal a node that was removed from the cluster configuration
+			// while it was offline: it keeps losing elections forever ("not in
+			// configuration") until something restarts it. If confirmed, heal
+			// tears the node down and (by default) exits to restart fresh —
+			// stop the loop.
+			if c.checkOrphaned(&orphanStrikes) {
+				return
+			}
 			if c.Node.IsLeader() {
 				if c.cfg.DeadVoterTimeout > 0 {
 					c.sweepDeadVoters(lastSeen)
@@ -301,6 +330,162 @@ func (c *Cluster) run(ctx context.Context, cancel context.CancelFunc) {
 			}
 		}
 	}
+}
+
+// orphanDecision is the pure verdict of the orphan check from the observable
+// signals, kept separate from the I/O so it can be unit-tested.
+type orphanDecision int
+
+const (
+	// orphanHealthy: this node is (or believes itself to be) a member in good
+	// standing — reset the strike counter.
+	orphanHealthy orphanDecision = iota
+	// orphanInconclusive: no authoritative healthy peer could be reached this
+	// tick (e.g. a genuine full-cluster restart where nobody has a leader yet) —
+	// leave the strike counter untouched and keep waiting. This is what stops a
+	// cold-start quorum-formation window from being mistaken for orphaning.
+	orphanInconclusive
+	// orphanConfirmed: a healthy peer (one that sees a leader) reports a
+	// configuration that excludes us — count a strike toward self-heal.
+	orphanConfirmed
+)
+
+// orphanVerdict decides whether this node has been orphaned, from:
+//   - isLeader:       are we the Raft leader (definitionally a member)?
+//   - selfInConfig:   does our own current configuration list us?
+//   - hasOthers:      does our configuration list at least one other server?
+//   - peerListsUs:    a reachable healthy peer's configuration includes us.
+//   - peerExcludesUs: a reachable healthy peer's configuration excludes us.
+//
+// The local signal is decisive: a node removed from the cluster while offline,
+// once it regains contact, receives the committed configuration that excludes
+// it — so selfInConfig goes false while hasOthers stays true. A leader, a
+// normal follower, or a node recovering a full-cluster restart all still list
+// themselves (selfInConfig true) and short-circuit to healthy; a brand-new node
+// that has not learned any configuration yet (no others) is left to keep
+// joining. Only when our own configuration names other servers but not us do we
+// defer to an authoritative healthy peer for the final say.
+func orphanVerdict(isLeader, selfInConfig, hasOthers, peerListsUs, peerExcludesUs bool) orphanDecision {
+	if isLeader || selfInConfig || !hasOthers {
+		return orphanHealthy
+	}
+	if peerListsUs {
+		return orphanHealthy
+	}
+	if peerExcludesUs {
+		return orphanConfirmed
+	}
+	return orphanInconclusive
+}
+
+// checkOrphaned applies orphanVerdict to live signals and drives the strike
+// counter. It returns true once self-heal has been initiated (the caller must
+// stop the run loop). See orphanVerdict for the safety reasoning.
+func (c *Cluster) checkOrphaned(strikes *int) bool {
+	isLeader := c.Node.IsLeader()
+	selfIn, hasOthers := c.selfConfigState()
+	// Cheap local gate: only probe peers once our own committed configuration
+	// already excludes us — otherwise there is nothing to confirm.
+	var listed, excluded bool
+	if !isLeader && !selfIn && hasOthers {
+		listed, excluded = c.peerConfigVerdict()
+	}
+	switch orphanVerdict(isLeader, selfIn, hasOthers, listed, excluded) {
+	case orphanHealthy:
+		*strikes = 0
+		return false
+	case orphanInconclusive:
+		return false
+	case orphanConfirmed:
+		*strikes++
+		c.logger.Printf("orphan self-heal: node %s absent from cluster configuration per healthy peer (%d/%d confirmations)",
+			c.Node.NodeID(), *strikes, c.cfg.OrphanConfirmations)
+		if *strikes >= c.cfg.OrphanConfirmations {
+			c.heal("removed from cluster configuration")
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+// selfConfigState reports whether this node's own Raft configuration lists it
+// (selfIncluded) and whether it lists any other server (hasOthers). A read
+// error yields (false, false), which checkOrphaned treats as "still joining" —
+// never as a reason to self-heal.
+func (c *Cluster) selfConfigState() (selfIncluded, hasOthers bool) {
+	servers, err := c.Node.Nodes()
+	if err != nil {
+		return false, false
+	}
+	me := c.Node.NodeID()
+	for _, s := range servers {
+		if string(s.ID) == me {
+			selfIncluded = true
+		} else {
+			hasOthers = true
+		}
+	}
+	return selfIncluded, hasOthers
+}
+
+// peerConfigVerdict probes discovered peers for an authoritative answer to "is
+// this node still in the cluster configuration?". Only a peer that currently
+// sees a leader (i.e. is part of a live quorum) is authoritative; a peer that
+// itself has no leader is in the same uncertain state we are and is ignored.
+// Peers too old to report Members (nil list) are skipped, so a cluster of
+// pre-v0.13 nodes simply never triggers self-heal rather than mis-triggering.
+//
+// listed is true as soon as any healthy peer's configuration includes us
+// (definitive: the configuration is replicated, so one healthy member is
+// enough). excluded is true if at least one healthy peer reported a Members
+// list that omits us.
+func (c *Cluster) peerConfigVerdict() (listed, excluded bool) {
+	me := c.Node.NodeID()
+	for _, p := range c.disc.Peers() {
+		if p.Advertise == "" || p.NodeID == me {
+			continue
+		}
+		st, err := colmena.ProbeStatus(p.Advertise, c.cfg.TLSConfig, 2*time.Second)
+		if err != nil {
+			continue
+		}
+		if !st.IsLeader && st.LeaderAddr == "" {
+			continue // peer not in a live quorum — not authoritative
+		}
+		if len(st.Members) == 0 {
+			continue // peer too old to report membership
+		}
+		for _, id := range st.Members {
+			if id == me {
+				return true, excluded // a healthy member still lists us → settled
+			}
+		}
+		excluded = true
+	}
+	return false, excluded
+}
+
+// heal discards this node's local state so it can rejoin the cluster as a
+// brand-new member. It closes the node (releasing the BoltDB lock), wipes the
+// on-disk Raft state and SQLite replicas, then either invokes the configured
+// OnSelfHeal hook or, by default, exits the process so the Fly machine restarts
+// and takes the fresh cold-start/join path. Called from the run goroutine,
+// which returns immediately afterwards.
+func (c *Cluster) heal(reason string) {
+	c.logger.Printf("orphan self-heal: %s — discarding local state to rejoin as a new member", reason)
+	if err := c.Node.Close(); err != nil {
+		c.logger.Printf("orphan self-heal: node close: %v", err)
+	}
+	if err := colmena.WipeLocalState(c.cfg.DataDir); err != nil {
+		c.logger.Printf("orphan self-heal: wipe local state: %v", err)
+	}
+	if c.cfg.OnSelfHeal != nil {
+		c.cfg.OnSelfHeal(reason)
+		return
+	}
+	c.logger.Printf("orphan self-heal: exiting so the supervisor restarts this machine to rejoin fresh")
+	os.Exit(1)
 }
 
 // refreshVoterFlag keeps the in-memory voter flag in sync with the Raft config,

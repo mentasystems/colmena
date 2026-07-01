@@ -84,6 +84,39 @@ func TestCaughtUp(t *testing.T) {
 	}
 }
 
+func TestOrphanVerdict(t *testing.T) {
+	cases := []struct {
+		name                              string
+		isLeader, selfInConfig, hasOthers bool
+		peerListsUs, peerExcludesUs       bool
+		want                              orphanDecision
+	}{
+		{"leader is always healthy", true, false, true, false, true, orphanHealthy},
+		{"normal follower lists itself", false, true, true, false, false, orphanHealthy},
+		{"recovering full restart lists itself", false, true, true, false, false, orphanHealthy},
+		{"fresh node knows no other servers", false, false, false, false, false, orphanHealthy},
+		// Our own config excludes us but a healthy peer still lists us (e.g. a
+		// fresh joiner being added) → not orphaned.
+		{"healthy peer still lists us", false, false, true, true, false, orphanHealthy},
+		// The orphan: own config excludes us AND a healthy peer confirms the
+		// exclusion.
+		{"removed: healthy peer excludes us", false, false, true, false, true, orphanConfirmed},
+		// Own config excludes us but no healthy peer is reachable to confirm
+		// (e.g. a brief partition) → wait, don't wipe.
+		{"excluded but no authoritative peer", false, false, true, false, false, orphanInconclusive},
+		// "lists us" must win over a stale "excludes us" if both are seen.
+		{"listed beats excluded", false, false, true, true, true, orphanHealthy},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := orphanVerdict(c.isLeader, c.selfInConfig, c.hasOthers, c.peerListsUs, c.peerExcludesUs)
+			if got != c.want {
+				t.Fatalf("orphanVerdict=%d want %d", got, c.want)
+			}
+		})
+	}
+}
+
 func TestProbeForLeaderNoReachablePeers(t *testing.T) {
 	cfg := Config{VoterQuorum: 3}
 	if _, _, ok := probeForLeader(cfg, nil); ok {
@@ -455,6 +488,109 @@ func TestFullRestartReElects(t *testing.T) {
 		return false
 	}) {
 		t.Fatal("recovered cluster did not settle at 3 voters")
+	}
+}
+
+// TestOrphanSelfHeal is the regression test for the operational bug where a node
+// removed from the cluster configuration while it was offline comes back with
+// stale Raft state naming itself a member, loses elections forever ("not in
+// configuration"), and only Fly's kill-and-restart breaks the loop — endlessly.
+// The fly layer must detect this (a healthy peer's configuration excludes us)
+// and self-heal: wipe local state and restart fresh.
+func TestOrphanSelfHeal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skips real-cluster lifecycle test in -short")
+	}
+	ports := freeSpacedPortPairs(t, 3)
+	dirs := [3]string{t.TempDir(), t.TempDir(), t.TempDir()}
+	ids := [3]string{"a", "b", "c"}
+	addr := func(i int) string { return fmt.Sprintf("127.0.0.1:%d", ports[i]) }
+
+	// Form a 3-voter cluster: a bootstraps, b and c join.
+	a := newColmenaNodeAt(t, ids[0], dirs[0], addr(0), true, "")
+	defer a.Close()
+	if err := a.WaitForLeader(5 * time.Second); err != nil {
+		t.Fatalf("wait leader: %v", err)
+	}
+	b := newColmenaNodeAt(t, ids[1], dirs[1], addr(1), false, addr(0))
+	defer b.Close()
+	c := newColmenaNodeAt(t, ids[2], dirs[2], addr(2), false, addr(0))
+	if !waitFor(10*time.Second, func() bool {
+		v, idset := countVoters(a)
+		return v == 3 && len(idset) == 3
+	}) {
+		v, idset := countVoters(a)
+		t.Fatalf("cluster did not form 3 voters: voters=%d ids=%v", v, idset)
+	}
+
+	// c goes offline, then the leader removes it from the configuration. c never
+	// learns it was removed — its on-disk config still names {a,b,c}.
+	if err := c.Close(); err != nil {
+		t.Fatalf("close c: %v", err)
+	}
+	if err := a.RemoveNode("c"); err != nil {
+		t.Fatalf("remove c: %v", err)
+	}
+	if !waitFor(10*time.Second, func() bool {
+		_, idset := countVoters(a)
+		return !idset["c"] && len(idset) == 2
+	}) {
+		_, idset := countVoters(a)
+		t.Fatalf("leader did not drop c: ids=%v", idset)
+	}
+
+	// c restarts from its persisted (stale) state — the fly recovery path. It
+	// believes it is still a member but can never win an election, since a and b
+	// reject it as "not in configuration".
+	cr := newColmenaNodeAt(t, ids[2], dirs[2], addr(2), false, "")
+	defer cr.Close()
+
+	healed := make(chan string, 1)
+	disc := &fakeDiscovery{}
+	disc.set([]cluster.Peer{
+		{NodeID: "a", Advertise: addr(0)},
+		{NodeID: "b", Advertise: addr(1)},
+	})
+	cl := &Cluster{
+		Node: cr,
+		cfg: Config{
+			DataDir:             dirs[2],
+			VoterQuorum:         3,
+			OrphanConfirmations: 2,
+			OnSelfHeal:          func(reason string) { healed <- reason },
+		},
+		logger: log.New(io.Discard, "", 0),
+		disc:   disc,
+		stop:   make(chan struct{}),
+		done:   make(chan struct{}),
+	}
+
+	// Drive the check until self-heal fires. cr must look orphaned: it lists
+	// itself, has no leader, and healthy peers a/b exclude it.
+	strikes := 0
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if cl.checkOrphaned(&strikes) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	select {
+	case reason := <-healed:
+		if reason == "" {
+			t.Fatal("heal fired with empty reason")
+		}
+	default:
+		selfIn, hasOthers := cl.selfConfigState()
+		t.Fatalf("orphaned node did not self-heal (strikes=%d, selfInConfig=%v, hasOthers=%v, leaderID=%q)",
+			strikes, selfIn, hasOthers, cr.LeaderID())
+	}
+
+	// heal closed the node and wiped its state: the dir is now pristine, so a
+	// restart takes the fresh join path instead of recovering the stale config.
+	if has, err := colmena.HasExistingState(dirs[2]); err != nil || has {
+		t.Fatalf("c's state not wiped after self-heal: HasExistingState=%v err=%v", has, err)
 	}
 }
 

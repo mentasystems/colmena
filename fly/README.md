@@ -69,6 +69,30 @@ than `DeadVoterTimeout` and **promotes** a non-voter to restore the quorum. On
 `SIGTERM`, `GracefulLeave` transfers leadership and removes the node so a rolling
 deploy doesn't wait for the sweep.
 
+### Orphan self-heal
+
+A node that was **reaped while it was offline** comes back holding stale Raft
+state that still names it a member. The live cluster has moved on without it, so
+its vote requests are rejected forever (`not in configuration`) and it never
+forms or joins a quorum — Fly kills it, it restarts, and the loop repeats
+indefinitely. The same background loop detects this: once the node's own
+committed configuration no longer lists it **and** a healthy peer (one that sees
+a leader) confirms the exclusion for `OrphanConfirmations` consecutive ticks
+(default 3), the node **wipes its local state and restarts** to rejoin as a
+brand-new member — the leader re-adds it through the normal join/promote path.
+
+The detection is deliberately conservative so it never fires during a legitimate
+full-cluster restart: in that case every node recovers a configuration that
+*includes itself*, so no node is ever seen as removed. Self-heal triggers only
+when the cluster is demonstrably healthy without this node.
+
+- `OrphanConfirmations` — consecutive confirmations before healing (default 3).
+- `OnSelfHeal` — override the default action (`os.Exit(1)` to let Fly restart the
+  machine); the node has already been closed and its state wiped when it runs.
+- `ForceCleanStart` (or env `COLMENA_FORCE_CLEAN_START=1`) — operator escape
+  hatch: discard persisted state at startup and rejoin fresh, for a node wedged
+  by stale state that the automatic path can't reach (e.g. it can't see a peer).
+
 ## Required `fly.toml`
 
 Pin **one** region, deploy **rolling one machine at a time**, mount a persistent
