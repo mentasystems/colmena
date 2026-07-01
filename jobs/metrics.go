@@ -30,6 +30,7 @@ func MetricsHandler(m *Manager) http.Handler {
 		writeCounter(&b, "colmena_jobs_failed_total", "Job runs that returned a non-nil error", s.Failed)
 		writeCounter(&b, "colmena_jobs_retried_total", "Job runs that were rescheduled for retry", s.Retried)
 		writeCounter(&b, "colmena_jobs_dead_total", "Jobs that reached max_attempts and were marked dead", s.Dead)
+		writeCounter(&b, "colmena_jobs_reaped_total", "Terminal jobs deleted by the retention reaper on this node", s.Reaped)
 
 		fmt.Fprintln(&b, "# HELP colmena_jobs_queue Cluster-wide job count by status")
 		fmt.Fprintln(&b, "# TYPE colmena_jobs_queue gauge")

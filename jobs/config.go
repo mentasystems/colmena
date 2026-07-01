@@ -30,6 +30,20 @@ type Config struct {
 	// DefaultBackoff is the base backoff for retries when a handler does not
 	// register a custom backoff. Default: 5s base, 1h cap.
 	DefaultBackoff Backoff
+
+	// RetainTerminal is how long a job in a terminal state (succeeded or dead)
+	// is kept before the reaper deletes it. Enqueue/claim/finalise never remove
+	// rows — a completed job just flips to 'succeeded' — so without reaping the
+	// colmena_jobs table grows without bound. That bloats the store and, because
+	// every Raft snapshot copies the whole database, inflates snapshot size and
+	// memory until nodes OOM. Default: 24h. Set to a negative duration to
+	// disable reaping and keep all history.
+	RetainTerminal time.Duration
+
+	// ReapInterval is how often the leader deletes expired terminal jobs (and
+	// compacts the store once it holds enough free pages to be worth it).
+	// Default: 10m.
+	ReapInterval time.Duration
 }
 
 func (c *Config) applyDefaults() {
@@ -56,5 +70,13 @@ func (c *Config) applyDefaults() {
 	}
 	if c.DefaultBackoff.Max <= 0 {
 		c.DefaultBackoff.Max = 1 * time.Hour
+	}
+	// Zero means "unset" → default. A negative value is meaningful (reaping
+	// disabled), so only rewrite the zero case.
+	if c.RetainTerminal == 0 {
+		c.RetainTerminal = 24 * time.Hour
+	}
+	if c.ReapInterval <= 0 {
+		c.ReapInterval = 10 * time.Minute
 	}
 }

@@ -8,6 +8,7 @@ type Stats struct {
 	Failed    uint64 `json:"failed"`
 	Retried   uint64 `json:"retried"`
 	Dead      uint64 `json:"dead"`
+	Reaped    uint64 `json:"reaped"`
 
 	// Cluster-wide queue depth by status. These are read from the
 	// replicated colmena_jobs table so all nodes see the same numbers
@@ -28,6 +29,7 @@ func (m *Manager) Stats() (*Stats, error) {
 		Failed:        m.failed.Load(),
 		Retried:       m.retried.Load(),
 		Dead:          m.dead.Load(),
+		Reaped:        m.reaped.Load(),
 		ByStatus:      make(map[Status]int64),
 		PendingByType: make(map[string]int64),
 	}
