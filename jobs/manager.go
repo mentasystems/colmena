@@ -33,6 +33,7 @@ type Manager struct {
 	failed    atomic.Uint64
 	retried   atomic.Uint64
 	dead      atomic.Uint64
+	reaped    atomic.Uint64
 }
 
 // New starts a jobs manager bound to the given node. Schema is applied
@@ -72,6 +73,13 @@ func New(node *colmena.Node, cfg Config) (*Manager, error) {
 	m.wg.Add(2)
 	go m.sweeperLoop()
 	go m.schedulerLoop()
+
+	// Reaping is on by default (24h retention); a negative RetainTerminal
+	// opts out and keeps all terminal jobs forever.
+	if m.config.RetainTerminal >= 0 {
+		m.wg.Add(1)
+		go m.reaperLoop()
+	}
 
 	return m, nil
 }
