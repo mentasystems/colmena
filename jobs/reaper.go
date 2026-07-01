@@ -5,18 +5,19 @@ import (
 	"time"
 )
 
-// vacuumFreeRatio is the free-page fraction above which reapOnce compacts the
-// store with VACUUM. Deleting jobs leaves free pages behind: SQLite reuses them
-// for later inserts but never shrinks the file on its own, and every Raft
-// snapshot copies the full page count — so a store that once grew large stays
-// large (slow and memory-hungry to snapshot) until it is vacuumed.
-const vacuumFreeRatio = 0.25
-
 // reaperLoop runs on the leader and deletes terminal jobs (succeeded/dead)
-// older than config.RetainTerminal, then compacts the store when it has
-// accumulated enough free space. finalise() only ever flips a completed job to
-// 'succeeded'/'dead' — it never deletes — so without this loop colmena_jobs
-// grows without bound and drags every snapshot down with it.
+// older than config.RetainTerminal. finalise() only ever flips a completed job
+// to 'succeeded'/'dead' — it never deletes — so without this loop colmena_jobs
+// grows without bound and drags every Raft snapshot down with it.
+//
+// We only need to bound the row COUNT: a Raft snapshot copies the store with
+// SQLite's VACUUM INTO / Online Backup path, which already emits a compacted
+// image, so deleting the rows is enough to shrink every future snapshot. The
+// physical file self-heals too — freed pages are reused by later inserts, and a
+// node that restores from a snapshot installs the compacted copy. We do NOT run
+// VACUUM here: colmena's writer opens with _txlock=immediate, so a replicated
+// `VACUUM` fails with "cannot VACUUM from within a transaction" under load, and
+// it would be redundant anyway.
 func (m *Manager) reaperLoop() {
 	defer m.wg.Done()
 
@@ -63,29 +64,4 @@ func (m *Manager) reapOnce() {
 	}
 	m.reaped.Add(uint64(rows))
 	log.Printf("colmena/jobs: reaped %d terminal job(s)", rows)
-	m.maybeCompact()
-}
-
-// maybeCompact runs VACUUM when free pages exceed vacuumFreeRatio of the file.
-// VACUUM changes no logical content, so replicating it through the write path
-// is safe — every node reclaims its own copy. It briefly blocks that node's
-// apply loop, so we only pay it when there is meaningful space to reclaim
-// (typically once, right after a large backlog is first reaped).
-func (m *Manager) maybeCompact() {
-	var freelist, pageCount int64
-	if err := m.node.DB().QueryRow(`PRAGMA freelist_count`).Scan(&freelist); err != nil {
-		log.Printf("colmena/jobs: freelist_count: %v", err)
-		return
-	}
-	if err := m.node.DB().QueryRow(`PRAGMA page_count`).Scan(&pageCount); err != nil {
-		log.Printf("colmena/jobs: page_count: %v", err)
-		return
-	}
-	if pageCount == 0 || float64(freelist)/float64(pageCount) < vacuumFreeRatio {
-		return
-	}
-	log.Printf("colmena/jobs: compacting store (%d of %d pages free)", freelist, pageCount)
-	if _, err := m.node.DB().Exec(`VACUUM`); err != nil {
-		log.Printf("colmena/jobs: vacuum: %v", err)
-	}
 }

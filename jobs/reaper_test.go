@@ -2,7 +2,6 @@ package jobs
 
 import (
 	"database/sql"
-	"fmt"
 	"testing"
 	"time"
 
@@ -48,7 +47,7 @@ func TestReaperDeletesExpiredTerminalJobs(t *testing.T) {
 	db := m.Node().DB()
 
 	now := time.Now().UnixMilli()
-	oldMs := now - (2 * time.Hour).Milliseconds()   // beyond retention
+	oldMs := now - (2 * time.Hour).Milliseconds()      // beyond retention
 	recentMs := now - (5 * time.Minute).Milliseconds() // within retention
 
 	insertJob(t, db, "old-succeeded", string(StatusSucceeded), oldMs)
@@ -88,64 +87,6 @@ func TestReaperDisabled(t *testing.T) {
 	if !jobExists(t, db, "ancient") {
 		t.Fatal("job reaped despite reaping being disabled (RetainTerminal < 0)")
 	}
-}
-
-// TestReaperCompactsStore fills the store, reaps everything, and asserts the
-// database file actually shrinks — i.e. the VACUUM in maybeCompact runs through
-// the replicated write path and reclaims the free pages that a plain DELETE
-// leaves behind (without which every Raft snapshot would keep copying them).
-func TestReaperCompactsStore(t *testing.T) {
-	_, m := testManager(t, func(c *Config) {
-		c.RetainTerminal = time.Hour
-		c.ReapInterval = 100 * time.Millisecond
-	})
-	db := m.Node().DB()
-
-	// Insert recent (not-yet-eligible) rows in a SINGLE transaction so it is one
-	// Raft entry — inserting one-by-one would be thousands of slow round-trips,
-	// and the reaper would race the loop. Rows stay put until we backdate them.
-	blob := make([]byte, 1024) // big enough that freeing them crosses the vacuum threshold
-	now := time.Now().UnixMilli()
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	for i := 0; i < 3000; i++ {
-		if _, err := tx.Exec(
-			`INSERT INTO colmena_jobs
-                (id, type, payload, status, enqueued_at, run_at, finished_at, timeout_ms)
-             VALUES (?, 'noop', ?, 'succeeded', ?, ?, ?, 0)`,
-			fmt.Sprintf("bulk-%d", i), blob, now, now, now,
-		); err != nil {
-			t.Fatalf("insert bulk-%d: %v", i, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-
-	pageCount := func() int64 {
-		var n int64
-		if err := db.QueryRow(`PRAGMA page_count`).Scan(&n); err != nil {
-			t.Fatalf("page_count: %v", err)
-		}
-		return n
-	}
-	before := pageCount()
-
-	// Now make every row eligible in one statement; the reaper deletes them all
-	// on its next tick and then compacts.
-	oldMs := now - (2 * time.Hour).Milliseconds()
-	if _, err := db.Exec(`UPDATE colmena_jobs SET finished_at = ?`, oldMs); err != nil {
-		t.Fatalf("backdate: %v", err)
-	}
-
-	waitFor(t, 5*time.Second, "store compacted after reap", func() bool {
-		// Reaped all rows AND reclaimed pages (VACUUM shrinks page_count).
-		var remaining int64
-		_ = db.QueryRow(`SELECT COUNT(*) FROM colmena_jobs`).Scan(&remaining)
-		return remaining == 0 && pageCount() < before/2
-	})
 }
 
 // TestReaperReplicatesDeterministically boots a 3-node cluster and asserts that
