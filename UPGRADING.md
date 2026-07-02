@@ -22,7 +22,7 @@ Existing single-node callers compile unchanged:
   now see the transaction's own writes, and `LastInsertId`/`RowsAffected`
   work immediately (v1 buffered writes until Commit and returned
   `ErrTxResultPending`).
-- Removed: jobs subpackage, cluster/RPC/TLS/LAN discovery, consistency
+- Removed: cluster/RPC/TLS/LAN discovery, consistency
   levels, write batching, `ExecMulti`, `Migrate`, metrics handlers.
 
 ## New: continuous backup with PITR
