@@ -293,3 +293,59 @@ func TestNodeWithBackupIntegration(t *testing.T) {
 		t.Fatalf("v = %q", v)
 	}
 }
+
+// TestBackupFragmentedDB reproduces the production corruption: a database
+// with free pages (from deletes) whose page numbering must survive the
+// snapshot verbatim. A compacting snapshot (VACUUM INTO-style) renumbers
+// pages and makes WAL replay corrupt indexes — this test catches that.
+func TestBackupFragmentedDB(t *testing.T) {
+	tb := newTestBackup(t, BackupConfig{})
+
+	// Interleave two btrees, then punch holes in one: the free pages sit in
+	// the middle of the file, so any compacting snapshot renumbers the pages
+	// of the surviving btree.
+	if _, err := tb.db.Exec(`CREATE TABLE u (id INTEGER PRIMARY KEY, v TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 500; i++ {
+		tb.insert(t, fmt.Sprintf("bulk%04d", i))
+		if _, err := tb.db.Exec(`INSERT INTO u (v) VALUES (?)`, fmt.Sprintf("keep%04d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tb.db.Exec(`DELETE FROM t WHERE v LIKE 'bulk0%'`); err != nil {
+		t.Fatal(err)
+	}
+	tb.clock.advance(time.Second)
+	tb.sync(t)
+
+	// New generation on the fragmented file: snapshot must be page-faithful.
+	tb.clock.advance(time.Hour)
+	if err := tb.bm.takeSnapshot(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Writes after the snapshot arrive via WAL replay on restore. Touch both
+	// btrees so replayed page images land on renumbered pages if the
+	// snapshot compacted the file.
+	tb.insert(t, "after-snapshot")
+	for i := 0; i < 50; i++ {
+		if _, err := tb.db.Exec(`INSERT INTO u (v) VALUES (?)`, fmt.Sprintf("post%04d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tb.clock.advance(time.Second)
+	tb.sync(t)
+
+	got := tb.restoreValues(t, time.Time{}) // Restore runs integrity_check
+	if len(got) == 0 || got[len(got)-1] != "after-snapshot" {
+		t.Fatalf("restored tail = %v", got[max(0, len(got)-2):])
+	}
+
+	// And the source still matches the restore row-for-row.
+	var srcCount int
+	tb.db.QueryRow(`SELECT COUNT(*) FROM t`).Scan(&srcCount)
+	if srcCount != len(got) {
+		t.Fatalf("restored %d rows, source has %d", len(got), srcCount)
+	}
+}

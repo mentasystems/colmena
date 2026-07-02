@@ -1,7 +1,6 @@
 package colmena
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"path/filepath"
@@ -9,18 +8,6 @@ import (
 
 	_ "modernc.org/sqlite"
 )
-
-// sqliteBackup is the interface exposed by modernc.org/sqlite's internal conn
-// for the online backup API.
-type sqliteBackup interface {
-	NewBackup(dstUri string) (sqliteBackupHandle, error)
-}
-
-// sqliteBackupHandle represents an in-progress backup.
-type sqliteBackupHandle interface {
-	Step(n int32) (bool, error)
-	Finish() error
-}
 
 // store manages one local SQLite database with separate writer and reader pools.
 type store struct {
@@ -66,61 +53,6 @@ func newStoreAt(dbPath string, readConns int) (*store, error) {
 		readConns: readConns,
 	}, nil
 }
-
-// backupTo uses the SQLite Online Backup API to create a consistent copy of
-// the database at dstPath (used pages only, doesn't block readers). Falls
-// back to VACUUM INTO if the driver connection doesn't expose the API.
-func (s *store) backupTo(dstPath string) error {
-	conn, err := s.reader.Conn(context.Background())
-	if err != nil {
-		return fmt.Errorf("colmena: get conn for backup: %w", err)
-	}
-	defer conn.Close()
-
-	var backupErr error
-	err = conn.Raw(func(driverConn any) error {
-		bc, ok := driverConn.(sqliteBackup)
-		if !ok {
-			// Driver doesn't expose backup API — fall back to VACUUM INTO.
-			backupErr = errBackupNotSupported
-			return nil
-		}
-
-		dstURI := fmt.Sprintf("file:%s", dstPath)
-		backup, err := bc.NewBackup(dstURI)
-		if err != nil {
-			return fmt.Errorf("colmena: init backup: %w", err)
-		}
-
-		// Copy all pages in one step.
-		for {
-			more, err := backup.Step(-1)
-			if err != nil {
-				backup.Finish()
-				return fmt.Errorf("colmena: backup step: %w", err)
-			}
-			if !more {
-				break
-			}
-		}
-
-		return backup.Finish()
-	})
-
-	if err != nil {
-		return err
-	}
-
-	if backupErr == errBackupNotSupported {
-		if _, err := s.reader.Exec(fmt.Sprintf("VACUUM INTO '%s'", dstPath)); err != nil {
-			return fmt.Errorf("colmena: snapshot vacuum: %w", err)
-		}
-	}
-
-	return nil
-}
-
-var errBackupNotSupported = fmt.Errorf("backup API not supported")
 
 func (s *store) close() error {
 	var firstErr error

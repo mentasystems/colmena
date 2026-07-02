@@ -100,7 +100,7 @@ node, err := colmena.New(cfg)
   checkpoint folds it into the main file; the next WAL cycle becomes a new
   segment index.
 - Every `SnapshotInterval` a new generation starts with a full snapshot
-  (SQLite online backup API — consistent, non-blocking), and generations
+  (a literal file copy — page-faithful because the engine owns all checkpoints), and generations
   older than `Retention` are pruned.
 - Restore lays down the snapshot, replays each WAL index in order (SQLite's
   own WAL recovery does the applying), and finishes with `integrity_check`.

@@ -368,13 +368,15 @@ func (b *backupManager) takeSnapshot() error {
 		b.logf("colmena: backup %s: checkpoint before snapshot (non-fatal): %v", b.db, err)
 	}
 
-	tmpPath := b.store.dbPath + ".backup-snapshot"
-	_ = os.Remove(tmpPath) // safe-ignore: best-effort pre-clean; backupTo surfaces real problems
-	defer os.Remove(tmpPath)
-	if err := b.store.backupTo(tmpPath); err != nil {
-		return fmt.Errorf("snapshot: %w", err)
-	}
-	raw, err := os.ReadFile(tmpPath)
+	// The snapshot is a literal copy of the main database file. This is safe
+	// and page-faithful by construction: auto-checkpointing is disabled and
+	// this engine (which holds b.mu) is the only checkpointer, so the main
+	// file cannot change while we read it — concurrent writes land in the
+	// WAL, and the new generation ships that WAL from byte 0, so replay
+	// covers anything the checkpoint above left behind. A compacted copy
+	// (VACUUM INTO / online backup into a fresh file) would renumber pages
+	// and corrupt WAL replay — do not "optimize" this back.
+	raw, err := os.ReadFile(b.store.dbPath)
 	if err != nil {
 		return fmt.Errorf("read snapshot: %w", err)
 	}
