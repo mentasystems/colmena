@@ -209,13 +209,15 @@ func newBackupManager(db string, st *store, cfg BackupConfig, logf func(string, 
 }
 
 // start disables SQLite auto-checkpointing (the engine owns checkpoints),
-// takes the opening snapshot and launches the sync loop.
+// takes the opening snapshot and launches the sync loop. A failed initial
+// snapshot (e.g. transient S3 outage at boot) does not fail the store: it is
+// reported and retried on the sync ticker until a generation exists.
 func (b *backupManager) start() error {
 	if _, err := b.store.writer.Exec("PRAGMA wal_autocheckpoint = 0"); err != nil {
 		return fmt.Errorf("colmena: disable auto-checkpoint: %w", err)
 	}
 	if err := b.takeSnapshot(); err != nil {
-		return fmt.Errorf("colmena: initial snapshot: %w", err)
+		b.report(fmt.Errorf("initial snapshot (will retry): %w", err))
 	}
 	go b.run()
 	return nil
@@ -231,6 +233,15 @@ func (b *backupManager) run() {
 	for {
 		select {
 		case <-syncTicker.C:
+			// No generation yet (initial snapshot failed): retry it first,
+			// nothing can ship without one.
+			b.mu.Lock()
+			needSnap := b.generation == ""
+			b.mu.Unlock()
+			if needSnap {
+				b.report(b.takeSnapshot())
+				continue
+			}
 			b.report(b.sync())
 		case <-snapTicker.C:
 			b.report(b.takeSnapshot())
