@@ -52,10 +52,6 @@ func New(cfg Config) (*Node, error) {
 		}
 	}
 
-	// Open the default store eagerly so misconfiguration fails at startup.
-	if _, err := n.stores.get("default"); err != nil {
-		return nil, err
-	}
 	return n, nil
 }
 
