@@ -129,10 +129,20 @@ type BackupConfig struct {
 	// triggers a TRUNCATE checkpoint to keep the WAL bounded. Default: 4 MiB.
 	CheckpointThreshold int64
 
-	// OnError, when set, is invoked on every backup engine error with the
-	// database name. Use it to surface backup failures (alerts, health).
+	// OnError, when set, is invoked with the database name once a backup
+	// failure has persisted for AlertAfter consecutive syncs. Transient
+	// errors that recover on the next sync are recorded in status and logged
+	// but never reach OnError — use it to page on sustained failures only.
 	// Called from the engine goroutine; keep it fast.
 	OnError func(db string, err error)
+
+	// AlertAfter is the number of consecutive backup failures required before
+	// OnError fires. A single recovered blip is common against real object
+	// stores (connection resets, sporadic 400s) and should not page; only a
+	// failure that keeps repeating is worth surfacing. A success resets the
+	// counter, re-arming the alert. Default: 5 (≈5s at the 1s SyncInterval).
+	// Set to 1 to page on the first error.
+	AlertAfter int
 
 	// now is injectable for tests.
 	now func() time.Time
@@ -150,6 +160,9 @@ func (c *BackupConfig) applyDefaults() {
 	}
 	if c.CheckpointThreshold == 0 {
 		c.CheckpointThreshold = 4 << 20
+	}
+	if c.AlertAfter == 0 {
+		c.AlertAfter = 5
 	}
 	if c.now == nil {
 		c.now = time.Now
@@ -184,6 +197,7 @@ type backupManager struct {
 	salt1      uint32
 	salt2      uint32
 	status     BackupStatus
+	consecErrs int // consecutive failed syncs; reset on success (gates OnError)
 
 	stopCh   chan struct{}
 	doneCh   chan struct{}
@@ -258,17 +272,26 @@ func (b *backupManager) stop() {
 	<-b.doneCh
 }
 
-// report records and surfaces an engine error (nil is a no-op).
+// report records and surfaces an engine error. A nil error marks a healthy
+// sync and resets the consecutive-failure counter, re-arming OnError. Errors
+// are always recorded in status and logged, but OnError only fires once the
+// failure has persisted for AlertAfter consecutive syncs, so transient blips
+// that recover on the next tick do not page.
 func (b *backupManager) report(err error) {
 	if err == nil {
+		b.mu.Lock()
+		b.consecErrs = 0
+		b.mu.Unlock()
 		return
 	}
 	b.mu.Lock()
 	b.status.LastError = err.Error()
 	b.status.LastErrorAt = b.cfg.now()
+	b.consecErrs++
+	page := b.consecErrs >= b.cfg.AlertAfter
 	b.mu.Unlock()
 	b.logf("colmena: backup %s: %v", b.db, err)
-	if b.cfg.OnError != nil {
+	if page && b.cfg.OnError != nil {
 		b.cfg.OnError(b.db, err)
 	}
 }

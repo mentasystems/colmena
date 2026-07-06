@@ -223,7 +223,7 @@ func TestRestoreEmptyBackend(t *testing.T) {
 func TestBackupStatusAndOnError(t *testing.T) {
 	var mu sync.Mutex
 	var reported []string
-	tb := newTestBackup(t, BackupConfig{OnError: func(db string, err error) {
+	tb := newTestBackup(t, BackupConfig{AlertAfter: 1, OnError: func(db string, err error) {
 		mu.Lock()
 		reported = append(reported, db+": "+err.Error())
 		mu.Unlock()
@@ -245,6 +245,51 @@ func TestBackupStatusAndOnError(t *testing.T) {
 	if tb.bm.Status().LastError != "boom" {
 		t.Fatalf("LastError = %q", tb.bm.Status().LastError)
 	}
+}
+
+// TestBackupOnErrorGating verifies that OnError only pages after AlertAfter
+// consecutive failures and that a healthy sync resets the counter, so a
+// transient blip that recovers on the next tick never pages.
+func TestBackupOnErrorGating(t *testing.T) {
+	var mu sync.Mutex
+	var pages int
+	tb := newTestBackup(t, BackupConfig{AlertAfter: 3, OnError: func(db string, err error) {
+		mu.Lock()
+		pages++
+		mu.Unlock()
+	}})
+
+	// A lone failure followed by a success must not page.
+	tb.bm.report(fmt.Errorf("blip"))
+	tb.bm.report(nil)
+	mu.Lock()
+	if pages != 0 {
+		mu.Unlock()
+		t.Fatalf("transient blip paged: pages=%d, want 0", pages)
+	}
+	mu.Unlock()
+
+	// Sustained failures page exactly once when crossing the threshold, then
+	// again on every further failure (the alerter throttles the repeats).
+	for i := 0; i < 3; i++ {
+		tb.bm.report(fmt.Errorf("outage"))
+	}
+	mu.Lock()
+	if pages != 1 {
+		mu.Unlock()
+		t.Fatalf("crossing AlertAfter paged %d times, want 1", pages)
+	}
+	mu.Unlock()
+
+	// Recovery resets the counter: a new lone failure must not page again.
+	tb.bm.report(nil)
+	tb.bm.report(fmt.Errorf("blip2"))
+	mu.Lock()
+	if pages != 1 {
+		mu.Unlock()
+		t.Fatalf("post-recovery blip paged: pages=%d, want 1", pages)
+	}
+	mu.Unlock()
 }
 
 // TestNodeWithBackupIntegration exercises the real wiring: New() with a
